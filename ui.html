@@ -1,0 +1,1066 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastDL</title>
+<link rel="icon" href="/logo.png">
+<style>
+  :root {
+    --bg: #eef0f3; --win: #ffffff; --bar: #f7f8fa; --side: #f4f5f7; --line: #d9dce1; --line2: #eceef1;
+    --fg: #1d2127; --muted: #5f6672; --accent: #1f5fd6; --accent-fg: #ffffff; --sel: #dbe7fc; --alt: #f8f9fb; --hover: #eef3fc;
+    --ok: #16803c; --warn: #a86400; --err: #c62828; --track: #e3e6ea;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  button, input { font: inherit; color: inherit; }
+  .app { height: 100%; display: flex; flex-direction: column; background: var(--win); }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  .logo { width: 26px; height: 26px; display: block; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 8px; background: var(--bar); border-bottom: 1px solid var(--line); }
+  .tb { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 78px; padding: 6px 0 5px; border: 1px solid transparent; border-radius: 6px; background: none; font-size: 12px; cursor: pointer; }
+  .tb:hover:not(:disabled) { background: var(--hover); border-color: #c9d8f5; }
+  .tb:disabled { opacity: .38; cursor: default; }
+  .tb svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .sep { width: 1px; height: 44px; background: var(--line); margin: 0 6px; }
+  .search { margin-left: auto; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; flex: 0 1 280px; min-width: 180px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--win); color: var(--muted); }
+  .search:focus-within { border-color: var(--accent); }
+  .search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--fg); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  nav { flex: 0 0 200px; padding: 10px 8px; background: var(--side); border-right: 1px solid var(--line); overflow: auto; }
+  nav h2 { margin: 2px 8px 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .cat { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: none; text-align: left; cursor: pointer; }
+  .cat.sub { padding-left: 26px; }
+  .cat:hover { background: var(--hover); }
+  .cat[aria-current="true"] { background: var(--sel); font-weight: 600; }
+  .cat span:nth-child(2) { flex: 1; }
+  .cat .n { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+  .content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .table { flex: 1; overflow: auto; }
+  .grid { display: grid; grid-template-columns: minmax(280px, 2.4fr) 88px 170px 110px 105px 54px 112px minmax(160px, 1.4fr); min-width: 1100px; align-items: center; }
+  .head { position: sticky; top: 0; z-index: 1; height: 30px; background: var(--bar); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }
+  .head > div, .row > div { padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .head > div:first-child, .row > div:first-child { padding-left: 12px; }
+  .r { text-align: right; }
+  .row { height: 30px; border-bottom: 1px solid var(--line2); cursor: default; font-variant-numeric: tabular-nums; outline: 0; }
+  .row:nth-child(even) { background: var(--alt); }
+  .row:hover { background: var(--hover); }
+  .row.sel { background: var(--sel); }
+  .row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+  .name { display: flex; align-items: center; gap: 8px; }
+  .name span:last-child { overflow: hidden; text-overflow: ellipsis; }
+  .chip { flex: none; width: 32px; padding: 1px 0; border-radius: 3px; font-size: 9.5px; font-weight: 700; text-align: center; }
+  .st { display: flex; align-items: center; gap: 8px; }
+  .mini { flex: 1; height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .mini i, .big i { display: block; height: 100%; }
+  .muted { color: var(--muted); }
+  .empty { padding: 60px 20px; text-align: center; color: var(--muted); }
+
+  .big { position: relative; height: 22px; border-radius: 4px; background: var(--track); overflow: hidden; border: 1px solid var(--line); }
+  .big .gap { position: absolute; top: 0; bottom: 0; background: var(--track); }
+  .big .edge { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(0,0,0,.25); }
+
+  /* IDM-style progress window: one per download, opens on its own when a download starts */
+  #pw { position: fixed; inset: 0; margin: auto; width: min(700px, calc(100vw - 24px)); height: fit-content; max-height: calc(100vh - 24px);
+    padding: 0; border: 1px solid #9aa3ae; border-radius: 8px; box-shadow: 0 16px 48px rgba(0,0,0,.28); color: var(--fg); background: var(--win); overflow: auto; }
+  #pw { z-index: 20; } /* inline (browser tab) mode: above the list's sticky header */
+  #pw.moved { inset: auto; }
+  /* its own window (?progress=<id>): the window is the dialog; Windows draws the title bar */
+  .solo .app { display: none; }
+  .solo body { background: var(--win); }
+  .solo #pw { position: static; width: auto; max-height: none; border: 0; border-radius: 0; box-shadow: none; margin: 0; overflow: visible; }
+  .solo .pwhead { display: none; }
+  /* Download File Info window (?dialog=<id>) */
+  .dmode .app { display: none; }
+  .dmode body { background: var(--win); }
+  #dfi { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+  #dfi[hidden] { display: none; }
+  .dfimain { display: flex; gap: 18px; }
+  .dfigrid { flex: 1; min-width: 0; display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 9px 10px; align-items: center; }
+  .dfigrid > label { text-align: right; }
+  .dfigrid .row { display: flex; gap: 6px; min-width: 0; }
+  .dfigrid .row[hidden] { display: none; }
+  .dfigrid input, .dfigrid select { flex: 1; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; background: var(--win); color: var(--fg); }
+  .dfigrid input:focus, .dfigrid select:focus { outline: 0; border-color: var(--accent); }
+  .dfigrid input[readonly] { background: var(--bar); color: var(--muted); }
+  .btn.sq { width: 34px; min-width: 34px; height: 30px; padding: 0; }
+  .dfirem { margin: 0; padding: 4px 10px 10px; border: 1px solid var(--line); border-radius: 4px; }
+  .dfirem legend { padding: 0 4px; }
+  .dfirem input#dfiCatPath { width: 100%; height: 28px; }
+  .dfiside { flex: none; width: 90px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+  .dfiside .ext { width: 52px; height: 60px; display: grid; place-items: end center; padding-bottom: 8px; border-radius: 6px;
+    background: linear-gradient(135deg, #ff9a3c, #e8541c); color: #fff; font-weight: 700; font-size: 11px; }
+  .dfifoot { display: flex; justify-content: center; gap: 12px; }
+  .dfifoot .btn { min-width: 140px; height: 32px; }
+  .pwhead { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; height: 36px; padding-left: 12px; background: var(--bar);
+    border-bottom: 1px solid var(--line); cursor: move; user-select: none; }
+  .pwhead span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pwhead button { width: 44px; height: 36px; border: 0; background: none; cursor: pointer; font-size: 14px; }
+  .pwhead button:hover { background: #c42b1c; color: #fff; }
+  .pwbody { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .pwbox { border: 1px solid var(--line); border-radius: 0 4px 4px 4px; padding: 10px 14px; min-height: 178px; }
+  .pwbox[hidden] { display: none; }
+  .pwtabs { display: flex; gap: 2px; }
+  .pwtabs button[hidden] { display: none; }
+  .filesbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .filesbar .btn { height: 30px; }
+  .flist { max-height: 132px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+  .frow { display: grid; grid-template-columns: 18px minmax(0, 1fr) 80px 52px; gap: 8px; align-items: center; padding: 4px 8px;
+    border-bottom: 1px solid var(--line2); cursor: pointer; font-variant-numeric: tabular-nums; }
+  .frow span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .frow span:nth-child(n+3) { text-align: right; color: var(--muted); }
+  .pwtabs button { padding: 6px 12px; border: 1px solid var(--line); border-bottom: 0; border-radius: 4px 4px 0 0;
+    background: var(--bar); color: var(--muted); cursor: pointer; margin-bottom: -1px; }
+  .pwtabs button[aria-selected="true"] { background: var(--win); color: var(--fg); font-weight: 600; position: relative; }
+  .pwform { display: flex; flex-direction: column; gap: 12px; }
+  .pwform p { margin: 0; font-size: 12px; }
+  .pwform fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+  .pwform legend { padding: 0; margin-bottom: 4px; font-weight: 600; }
+  .chk { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .chk input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+  .limrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+  .limrow input { width: 110px; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+  .limrow input:disabled { background: var(--bar); color: var(--muted); }
+  .updbtn { border-color: var(--ok); color: var(--ok); font-weight: 600; }
+  .updnote { color: var(--accent); font-weight: 600; }
+  .powerbtn { padding: 2px 10px; border: 1px solid var(--err); border-radius: 12px; background: var(--win); color: var(--err); font-size: 12px; cursor: pointer; }
+  .pwurl { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 8px; }
+  .pwgrid { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 5px 10px; margin: 0; font-variant-numeric: tabular-nums; }
+  .pwgrid dt { color: var(--fg); }
+  .pwgrid dd { margin: 0; overflow-wrap: anywhere; }
+  .pwfill { height: 20px; border: 1px solid var(--line); border-radius: 3px; background: var(--track); overflow: hidden; }
+  .pwfill i { display: block; height: 100%; transition: width .4s;
+    background: linear-gradient(90deg, #16803c, #3cbf5f 50%, #16803c); }
+  .pwfill.paused i { background: var(--warn); }
+  .pwbtns { display: flex; gap: 10px; }
+  .pwbtns .btn { min-width: 110px; height: 32px; }
+  .pwcap { text-align: center; color: var(--muted); font-size: 12px; }
+  .pwlinks { color: var(--muted); font-size: 12px; }
+  .pwtable { border: 1px solid var(--line); border-radius: 4px; max-height: 140px; overflow: auto; font-variant-numeric: tabular-nums; }
+  .pwrow { display: grid; grid-template-columns: 44px 110px minmax(0, 1fr); gap: 8px; padding: 3px 10px; border-bottom: 1px solid var(--line2); }
+  .pwrow span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pwth { position: sticky; top: 0; background: var(--bar); font-weight: 600; color: var(--muted); }
+
+  footer { display: flex; flex-wrap: wrap; gap: 4px 20px; align-items: center; min-height: 28px; padding: 0 12px; background: var(--bar); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  footer b { color: var(--fg); font-weight: 600; }
+  .dot { color: var(--ok); }
+  .dot.off { color: var(--err); }
+  .netbtn { padding: 2px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--win); font-size: 12px; color: var(--muted); cursor: pointer; }
+  .netbtn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .netbtn[aria-pressed="true"] b { color: var(--accent); }
+
+  dialog { width: min(560px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,.2); color: var(--fg); }
+  dialog::backdrop { background: rgba(20, 24, 31, .35); }
+  dialog h2 { margin: 0; padding: 12px 18px; font-size: 14px; border-bottom: 1px solid var(--line); background: var(--bar); }
+  .dbody { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field > span { color: var(--muted); font-size: 12px; }
+  .field textarea { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12px; resize: vertical; }
+  .field textarea:focus { outline: 0; border-color: var(--accent); }
+  .field[hidden] { display: none; }
+  .optsec { margin: 0; padding: 10px 14px 12px; border: 1px solid var(--line); border-radius: 6px; display: flex; flex-direction: column; gap: 10px; }
+  .optsec legend { padding: 0 4px; font-weight: 600; }
+  .field > label { color: var(--muted); font-size: 12px; }
+  .field .row { display: flex; gap: 6px; }
+  .field .row input { flex: 1; }
+  .field select { height: 36px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--win); font: inherit; }
+  .delname { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+  .btn.primary.danger { background: var(--err); border-color: var(--err); }
+  .btn.primary.danger:hover { background: #a51f1f; }
+  .row2b { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .days { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  .days legend { padding: 0; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+  #schInfo { margin: 0; font-size: 12px; }
+  .dfoot .btn:disabled { opacity: .5; }
+  .torrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: -4px; }
+  .torrow .btn { height: 32px; }
+  .torrow .muted { font-size: 12px; }
+  .field input[readonly] { background: var(--bar); }
+  .row2 { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 12px; }
+  .field select { height: 36px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--win); }
+  .field input { height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; outline: 0; background: var(--win); }
+  .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #1f5fd622; }
+  .detect { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bar); }
+  .detect[hidden] { display: none; }
+  .detect b { display: block; }
+  .detect small { color: var(--muted); }
+  .derr { color: var(--err); min-height: 1em; }
+  .dfoot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); background: var(--bar); }
+  .btn { height: 36px; padding: 0 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--win); cursor: pointer; }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  .btn.primary:hover { background: #1a51b8; }
+
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    nav { flex: none; display: flex; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    nav h2 { display: none; }
+    .cat, .cat.sub { width: auto; flex: none; padding-left: 8px; }
+    .search { margin-left: 0; flex: 1 1 100%; }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <img class="logo" src="/logo.png" alt="">
+    <h1>FastDL</h1>  </header>
+
+  <div class="toolbar" role="toolbar" aria-label="Actions">
+    <button class="tb" id="bAdd" title="Add a link (Ctrl+N)"><svg viewBox="0 0 24 24" style="stroke:var(--accent)"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>Add URL</button>
+    <button class="tb" id="bResume"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5l5.5 3.5-5.5 3.5z"/></svg>Resume</button>
+    <button class="tb" id="bPause"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 9v6M14 9v6"/></svg>Pause</button>
+    <button class="tb" id="bPauseAll"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M10 9v6M14 9v6"/></svg>Pause All</button>
+    <div class="sep"></div>
+    <button class="tb" id="bDelete" title="Remove from list (Del)"><svg viewBox="0 0 24 24" style="stroke:var(--err)"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>
+    <button class="tb" id="bClear"><svg viewBox="0 0 24 24" style="stroke:var(--err)"><path d="M4 7h16M6 7l1 13h10l1-13M9 7V4h6v3M9 14l2 2 4-4"/></svg>Clear Done</button>
+    <div class="sep"></div>
+    <button class="tb" id="bOptions" title="Connections, folder, speed limit, browser"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>Options</button>
+    <button class="tb" id="bSched" title="Set when scheduled downloads start and stop"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M5 3L2 6M19 3l3 3"/></svg>Scheduler</button>
+    <button class="tb" id="bSchedOne" title="Add the selected download to the schedule, or take it out"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/></svg><span id="bSchedOneLbl">Schedule</span></button>
+    <div class="sep"></div>
+    <button class="tb" id="bFolder"><svg viewBox="0 0 24 24" style="stroke:#a87b00"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>Open Folder</button>
+    <label class="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+      <input id="q" placeholder="Search downloads" aria-label="Search downloads">
+    </label>
+  </div>
+
+  <main>
+    <nav aria-label="Categories"><h2>Categories</h2><div id="cats"></div></nav>
+    <div class="content">
+      <div class="table" id="table">
+        <div class="grid head">
+          <div>File name</div><div class="r">Size</div><div>Status</div><div>Time left</div>
+          <div>Transfer rate</div><div>Conn.</div><div>Added</div><div>Description</div>
+        </div>
+        <div id="rows" role="listbox" aria-label="Downloads"></div>
+      </div>
+    </div>
+  </main>
+
+  <footer id="status"></footer>
+</div>
+
+<!-- Download File Info: shown alone in its own window (?dialog=<id>), like IDM's -->
+<form id="dfi" hidden>
+  <div class="dfimain">
+    <div class="dfigrid">
+      <label for="dfiUrl">URL</label><input id="dfiUrl" readonly>
+      <label for="dfiCat">Category</label>
+      <div class="row">
+        <select id="dfiCat"></select>
+        <button type="button" class="btn sq" id="dfiAddCat" title="New category" aria-label="New category">+</button>
+        <span id="dfiNewCat" hidden class="row">
+          <input id="dfiNewCatName" placeholder="New category name" aria-label="New category name">
+          <button type="button" class="btn" id="dfiNewCatOk">Add</button>
+        </span>
+      </div>
+      <label for="dfiSave">Save As</label>
+      <div class="row">
+        <input id="dfiSave" list="dfiRecent" required spellcheck="false"><datalist id="dfiRecent"></datalist>
+        <button type="button" class="btn sq" id="dfiBrowse" title="Choose folder" aria-label="Choose folder">...</button>
+      </div>
+      <span></span>
+      <fieldset class="dfirem">
+        <legend><label class="chk"><input type="checkbox" id="dfiRemember"><span>Remember this path for "<span id="dfiCatName"></span>" category</span></label></legend>
+        <input id="dfiCatPath" readonly aria-label="Saved path for this category">
+      </fieldset>
+      <label for="dfiDesc">Description</label><input id="dfiDesc">
+    </div>
+    <div class="dfiside"><div class="ext" id="dfiExt">FILE</div><b id="dfiSize"></b></div>
+  </div>
+  <div class="derr" id="dfiErr"></div>
+  <div class="dfifoot">
+    <button type="button" class="btn" id="dfiLater">Download Later</button>
+    <button class="btn primary" id="dfiStart">Start Download</button>
+    <button type="button" class="btn" id="dfiCancel">Cancel</button>
+  </div>
+</form>
+
+<dialog id="pw" aria-labelledby="pwTitle">
+  <div class="pwhead" id="pwHead"><span id="pwTitle"></span><button id="pwX" aria-label="Close">&#x2715;</button></div>
+  <div class="pwbody">
+    <div>
+    <div class="pwtabs" role="tablist" aria-label="Download window">
+      <button role="tab" id="tabStatus" aria-controls="panStatus" aria-selected="true">Download status</button>
+      <button role="tab" id="tabLimit" aria-controls="panLimit" aria-selected="false" tabindex="-1">Speed Limiter</button>
+      <button role="tab" id="tabDone" aria-controls="panDone" aria-selected="false" tabindex="-1">Options on completion</button>
+      <button role="tab" id="tabFiles" aria-controls="panFiles" aria-selected="false" tabindex="-1" hidden>Files</button>
+    </div>
+    <div class="pwbox" role="tabpanel" id="panStatus" aria-labelledby="tabStatus">
+      <div class="pwurl" id="pwUrl"></div>
+      <dl class="pwgrid">
+        <dt>Status</dt><dd id="pwStatus"></dd>
+        <dt>File size</dt><dd id="pwSize"></dd>
+        <dt>Downloaded</dt><dd id="pwGot"></dd>
+        <dt>Transfer rate</dt><dd id="pwRate"></dd>
+        <dt>Time left</dt><dd id="pwLeft"></dd>
+        <dt>Resume capability</dt><dd id="pwResume"></dd>
+      </dl>
+    </div>
+    <div class="pwbox pwform" role="tabpanel" id="panLimit" aria-labelledby="tabLimit" hidden>
+      <label class="chk"><input type="checkbox" id="pwLimOn"> Use speed limiter</label>
+      <label class="limrow" for="pwLim">Maximum download speed for this download
+        <span><input type="number" id="pwLim" min="1" step="10" value="500" inputmode="numeric"> KBytes/sec</span></label>
+      <p class="muted">Takes effect right away, also in the middle of a download. All connections share this limit.
+        Current speed: <b id="pwLimNow">-</b></p>
+    </div>
+    <div class="pwbox pwform" role="tabpanel" id="panFiles" aria-labelledby="tabFiles" hidden>
+      <div class="filesbar">
+        <button type="button" class="btn" id="fAll">Select all</button>
+        <button type="button" class="btn" id="fNone">Select none</button>
+        <span class="muted" id="fSum"></span>
+        <span style="flex:1"></span>
+        <button type="button" class="btn primary" id="fApply">Start Download</button>
+      </div>
+      <div class="flist" id="fList" role="group" aria-label="Files in this torrent"></div>
+    </div>
+    <div class="pwbox pwform" role="tabpanel" id="panDone" aria-labelledby="tabDone" hidden>
+      <fieldset>
+        <legend>When this download finishes</legend>
+        <label class="chk"><input type="radio" name="onDone" value="nothing"> Do nothing</label>
+        <label class="chk"><input type="radio" name="onDone" value="open"> Open the file</label>
+        <label class="chk"><input type="radio" name="onDone" value="folder"> Open the folder</label>
+        <label class="chk"><input type="radio" name="onDone" value="sleep"> Put the computer to sleep</label>
+        <label class="chk"><input type="radio" name="onDone" value="shutdown"> Shut down the computer</label>
+      </fieldset>
+      <p class="muted">Sleep and shut down wait until every other download has finished too.
+        Shut down gives you 60 seconds to cancel.</p>
+    </div>
+    </div>
+    <div class="pwfill" id="pwFill"><i></i></div>
+    <div class="pwbtns">
+      <button class="btn" id="pwMoreBtn" aria-expanded="true">&lt;&lt; Hide details</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="pwPause" autofocus>Pause</button>
+      <button class="btn" id="pwCancel">Cancel</button>
+    </div>
+    <div id="pwMore" style="display:flex;flex-direction:column;gap:8px">
+      <div class="pwcap">Start positions and download progress by connections</div>
+      <div class="big" id="pwConnBar"></div>
+      <div class="pwlinks" id="pwLinks"></div>
+      <div class="pwtable">
+        <div class="pwrow pwth"><span>N.</span><span>Downloaded</span><span>Info</span></div>
+        <div id="pwRows"></div>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="opt" aria-labelledby="optTitle">
+  <form method="dialog" id="optForm">
+    <h2 id="optTitle">Options</h2>
+    <div class="dbody">
+      <fieldset class="optsec">
+        <legend>Downloads</legend>
+        <div class="row2b">
+          <label class="field"><span>Connections per download</span>
+            <select id="oConns"><option>1</option><option>2</option><option>4</option><option>8</option><option>16</option><option>32</option></select></label>
+          <label class="field"><span>Downloads at the same time</span><input type="number" id="oActive" min="1" max="10"></label>
+        </div>
+        <div class="field"><label for="oFolder">Default download folder (empty = your Downloads folder)</label>
+          <div class="row"><input id="oFolder" spellcheck="false"><button type="button" class="btn sq" id="oBrowse" aria-label="Choose folder">...</button></div></div>
+        <label class="field"><span>Global speed limit for all downloads together, in KB/s (0 = no limit)</span>
+          <input type="number" id="oLimit" min="0" step="50"></label>
+        <label class="chk"><input type="checkbox" id="oMulti"> Use all internet connections at once (Wi-Fi + Ethernet + phone tethering)</label>
+        <label class="chk"><input type="checkbox" id="oAuto"> Start FastDL with Windows</label>
+        <label class="chk"><input type="checkbox" id="oCloseDone"> Close a download's window 10 seconds after it finishes</label>
+      </fieldset>
+      <fieldset class="optsec">
+        <legend>Browser downloads</legend>
+        <label class="chk"><input type="checkbox" id="oAsk"> Show the Download File Info window before downloading</label>
+        <div class="row2b">
+          <label class="field"><span>Leave to the browser: files smaller than (MB, 0 = take all)</span><input type="number" id="oSkipMb" min="0" step="0.5"></label>
+          <label class="field"><span>Leave to the browser: these file types</span><input id="oSkipTypes" spellcheck="false"></label>
+        </div>
+      </fieldset>
+      <fieldset class="optsec">
+        <legend>Updates</legend>
+        <div class="field"><label for="oUpdUrl">Update address (latest.json, https only). <span id="oVersion"></span></label>
+          <div class="row"><input id="oUpdUrl" spellcheck="false" placeholder="https://.../latest.json">
+          <button type="button" class="btn" id="oCheck">Check now</button></div></div>
+        <small class="muted" id="oUpdMsg"></small>
+      </fieldset>
+      <div class="derr" id="optErr"></div>
+    </div>
+    <div class="dfoot">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="del" aria-labelledby="delTitle">
+  <form method="dialog" id="delForm">
+    <h2 id="delTitle">Delete download</h2>
+    <div class="dbody">
+      <p id="delName" class="delname"></p>
+      <label class="chk"><input type="checkbox" id="delFiles"> Also delete the file from disk</label>
+      <small class="muted">Without this, only the list entry goes, and adding the same link again continues where it stopped.</small>
+    </div>
+    <div class="dfoot">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary danger" value="ok">Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="sch" aria-labelledby="schTitle">
+  <form method="dialog" id="schForm">
+    <h2 id="schTitle">Scheduler</h2>
+    <div class="dbody">
+      <label class="chk"><input type="checkbox" id="schOn"> Start scheduled downloads automatically</label>
+      <div class="row2b">
+        <label class="field"><span>Start at</span><input type="time" id="schStart" required></label>
+        <label class="field"><span>Stop at (optional, leave empty to run until done)</span><input type="time" id="schStop"></label>
+      </div>
+      <fieldset class="days">
+        <legend>On these days</legend>
+        <label class="chk"><input type="checkbox" value="0"> Mon</label><label class="chk"><input type="checkbox" value="1"> Tue</label>
+        <label class="chk"><input type="checkbox" value="2"> Wed</label><label class="chk"><input type="checkbox" value="3"> Thu</label>
+        <label class="chk"><input type="checkbox" value="4"> Fri</label><label class="chk"><input type="checkbox" value="5"> Sat</label>
+        <label class="chk"><input type="checkbox" value="6"> Sun</label>
+      </fieldset>
+      <p class="muted" id="schInfo"></p>
+      <div class="derr" id="schErr"></div>
+    </div>
+    <div class="dfoot">
+      <button type="button" class="btn" id="schStartNow">Start now</button>
+      <button type="button" class="btn" id="schStopNow">Stop now</button>
+      <span style="flex:1"></span>
+      <button class="btn" value="cancel" formnovalidate>Close</button>
+      <button class="btn primary" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg">
+  <form method="dialog" id="addForm">
+    <h2>Add download</h2>
+    <div class="dbody">
+      <label class="field"><span>Address: file link, video page, magnet or .torrent</span>
+        <input id="addUrl" required autocomplete="off" placeholder="https://...">
+      </label>
+      <div class="torrow">
+        <span class="muted">or</span>
+        <button type="button" class="btn" id="bTorrent">Open .torrent file...</button>
+        <button type="button" class="btn" id="bTorrentClear" hidden>Use a link instead</button>
+        <input type="file" id="addTorrent" accept=".torrent,application/x-bittorrent" hidden>
+        <span class="muted">You can also drop a .torrent file on this window.</span>
+      </div>
+      <div class="detect" id="detect" hidden>
+        <span class="chip" id="detChip"></span>
+        <div><b id="detTitle"></b><small id="detSub"></small></div>
+      </div>
+      <div class="row2">
+        <label class="field"><span>Save to (leave empty for your Downloads folder)</span>
+          <input id="addFolder" autocomplete="off" placeholder="Downloads folder">
+        </label>
+        <label class="field"><span>Connections</span>
+          <select id="addConns">
+            <option>1</option><option>2</option><option>4</option><option selected>8</option><option>16</option><option>32</option>
+          </select>
+        </label>
+      </div>
+      <label class="field" id="mirrorField"><span>Mirrors (optional): other links to the same file, one per line. FastDL downloads from all of them at once.</span>
+        <textarea id="addMirrors" rows="2" spellcheck="false" placeholder="https://mirror2.example.com/same-file.zip"></textarea>
+      </label>
+      <small class="muted" id="connHint" hidden>More than 8 helps only on servers that allow it. FastDL lowers it automatically if the server refuses.</small>
+      <div class="derr" id="derr"></div>
+    </div>
+    <div class="dfoot">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn" value="later">Download later</button>
+      <button class="btn primary" value="start">Start download</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const H = { "Content-Type": "application/json", "X-FastDL": "1" };
+const post = (path, body) => fetch(path, { method: "POST", headers: H, body: JSON.stringify(body || {}) });
+const act = (id, a) => post(`/api/downloads/${id}/${a}`);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+const $ = id => document.getElementById(id);
+
+const size = n => { if (n == null) return ""; const u = ["B","KB","MB","GB","TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return n.toFixed(i ? 2 : 0) + " " + u[i]; };
+const dur = s => { s = Math.round(s); if (s < 60) return s + " sec"; if (s < 3600) return Math.floor(s / 60) + " min " + (s % 60) + " sec"; return Math.floor(s / 3600) + " hr " + Math.floor(s % 3600 / 60) + " min"; };
+const when = t => { const d = new Date(t * 1000), now = new Date(); const hm = d.toTimeString().slice(0, 5);
+  return d.toDateString() === now.toDateString() ? "Today " + hm : d.toLocaleDateString(undefined, { month: "short", day: "2-digit" }) + " " + hm; };
+// name before the server knows it (queued / failed): last part of the link
+const nameOf = d => { if (d.name) return d.name; if (!/^(https?|magnet):/i.test(d.url)) return d.url.split(/[\\/]/).pop(); try { return decodeURIComponent(new URL(d.url).pathname.split("/").pop()) || d.url; } catch { return d.url; } };
+const host = u => {
+  if (u.startsWith("magnet:")) return "magnet link";
+  if (!/^https?:/i.test(u)) return "torrent file"; // .torrent picked from disk: url is its saved copy
+  try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; }
+};
+
+// file type -> label colour + category
+const TYPES = [
+  ["Video", "#1f5fd6", /\.(mp4|mkv|webm|avi|mov|flv|m4v|wmv|3gp|ts)$/i],
+  ["Music", "#b0306e", /\.(mp3|m4a|aac|flac|wav|ogg|opus|wma)$/i],
+  ["Documents", "#c62828", /\.(pdf|docx?|xlsx?|pptx?|txt|csv|odt|ods|rtf|epub)$/i],
+  ["Compressed", "#a86400", /\.(zip|rar|7z|tar|gz|bz2|xz|tgz)$/i],
+  ["Programs", "#0f7b8a", /\.(exe|msi|apk|dmg|iso|deb|rpm|appx|msix)$/i],
+];
+function typeOf(d) {
+  const name = nameOf(d);
+  const ext = (name.match(/\.([a-z0-9]{1,5})$/i) || [])[1];
+  if (d.kind === "torrent") return { cat: "Torrents", color: "#6d3fc0", ext: "TOR" };
+  for (const [cat, color, re] of TYPES) if (re.test(name)) return { cat, color, ext: ext.toUpperCase().slice(0, 4) };
+  if (d.kind === "video") return { cat: "Video", color: "#1f5fd6", ext: "VID" };
+  return { cat: "Other", color: "#5f6672", ext: (ext || "FILE").toUpperCase().slice(0, 4) };
+}
+const ENGINE = { download: "FastDL", video: "yt-dlp", torrent: "aria2" };
+const CATS = [["All Downloads", 0], ["Unfinished", 0], ["Finished", 0], ["Scheduled", 0], ["Video", 1], ["Music", 1], ["Documents", 1], ["Compressed", 1], ["Programs", 1], ["Torrents", 1], ["Other", 1]];
+const ACTIVE = new Set(["downloading", "queued"]);
+
+let items = [], sel = null, cat = "All Downloads", online = true, net = { enabled: true, links: [] };
+let power = { pending: null, note: "" }, sched = { enabled: false }, customCats = [], upd = {};
+let seen = new Set(), loaded = false; // ids already shown, so only new downloads pop a progress window
+
+function inCat(d, c) {
+  if (c === "All Downloads") return true;
+  if (c === "Unfinished") return d.status !== "done";
+  if (c === "Finished") return d.status === "done";
+  if (c === "Scheduled") return d.scheduled && d.status !== "done";
+  return (d.category || typeOf(d).cat) === c; // category picked in Download File Info wins over the file type
+}
+const visible = () => {
+  const q = $("q").value.trim().toLowerCase();
+  return items.filter(d => inCat(d, cat) && (!q || nameOf(d).toLowerCase().includes(q)));
+};
+const pct = d => d.size ? Math.min(100, d.done * 100 / d.size) : d.status === "done" ? 100 : 0;
+const color = d => ({ downloading: "var(--accent)", paused: "var(--warn)", error: "var(--err)", done: "var(--ok)" })[d.status] || "var(--muted)";
+const left = d => d.status === "downloading" && d.size && d.speed > 0 ? dur((d.size - d.done) / d.speed) : "";
+
+function statusCell(d) {
+  if (d.status === "paused" && d.scheduled && !d.done) return `<span style="color:var(--accent)">Scheduled</span>`;
+  if (d.status === "downloading" || d.status === "paused") {
+    const label = d.size ? pct(d).toFixed(1) + "%" + (d.status === "paused" && d.scheduled ? " · scheduled" : "")
+      : d.status === "paused" ? "Paused" : "Receiving";
+    return `<div class="st"><div class="mini"><i style="width:${pct(d)}%;background:${color(d)}"></i></div><span style="color:${color(d)}">${label}</span></div>`;
+  }
+  const label = { queued: "Queued", error: "Error", done: "Complete" }[d.status] || d.status;
+  return `<span style="color:${color(d)}">${label}</span>`;
+}
+
+function renderRows(list) {
+  if (!list.length) {
+    $("rows").innerHTML = `<div class="empty">${online ? (items.length ? "Nothing here." : "No downloads yet. Click <b>Add URL</b>, or use the browser extension.") : "FastDL is not running. Start it with <code>python fastdl.py</code>"}</div>`;
+    return;
+  }
+  $("rows").innerHTML = list.map(d => {
+    const t = typeOf(d);
+    return `<div class="grid row${d.id === sel ? " sel" : ""}" role="option" aria-selected="${d.id === sel}" tabindex="${d.id === sel ? 0 : -1}" data-id="${d.id}">
+      <div class="name"><span class="chip" style="color:${t.color};background:${t.color}1a">${esc(t.ext)}</span><span>${esc(nameOf(d))}</span></div>
+      <div class="r">${size(d.size)}</div>
+      <div>${statusCell(d)}</div>
+      <div>${left(d)}</div>
+      <div>${d.status === "downloading" ? size(d.speed) + "/s" : ""}</div>
+      <div class="muted">${d.status === "downloading" ? d.active : ""}</div>
+      <div class="muted">${when(d.added)}</div>
+      <div class="muted" style="${d.error ? "color:var(--err)" : ""}" title="${esc(d.error || d.desc || d.url)}">${esc(d.error || d.desc || host(d.url))}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderCats() {
+  $("cats").innerHTML = [...CATS, ...customCats.map(c => [c, 1])].map(([c, sub]) => `<button class="cat${sub ? " sub" : ""}" aria-current="${c === cat}" data-cat="${esc(c)}">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b58900" stroke-width="1.8" stroke-linejoin="round"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg>
+    <span>${esc(c)}</span><span class="n">${items.filter(d => inCat(d, c)).length}</span></button>`).join("");
+}
+
+// ---- progress window (IDM's per-download window) ----
+let pwId = null;
+const STATUS_TEXT = { downloading: "Receiving data...", queued: "Waiting in queue", paused: "Paused", done: "Complete" };
+
+function renderProgress() {
+  const d = items.find(x => x.id === pwId);
+  if (!d) { if (pwId) closeProgress(); return; }
+  const p = pct(d), done = d.status === "done";
+  $("pwTitle").textContent = done ? `Download complete · ${nameOf(d)}` : `${p.toFixed(0)}% ${nameOf(d)}`;
+  $("pwUrl").textContent = d.url; $("pwUrl").title = d.url;
+  $("pwStatus").textContent = d.error ? `Error: ${d.error}` : d.phase || STATUS_TEXT[d.status] || d.status;
+  $("pwStatus").style.color = d.error ? "var(--err)" : "";
+  $("pwSize").textContent = d.size ? size(d.size) : "Unknown";
+  $("pwGot").textContent = `${size(d.done)}${d.size ? ` ( ${p.toFixed(2)} % )` : ""}`;
+  $("pwRate").textContent = (d.status === "downloading" ? `${size(d.speed)}/sec` : "") + (d.limit ? `  (limited to ${size(d.limit)}/sec)` : "");
+  $("pwLimNow").textContent = d.status === "downloading" ? `${size(d.speed)}/sec` : "-";
+  $("pwLeft").textContent = left(d) || (done ? "Done" : "");
+  $("pwResume").textContent = d.resumable == null ? "" : d.resumable ? "Yes" : "No (restarts from zero)";
+  $("pwFill").firstElementChild.style.width = p + "%";
+  $("pwFill").classList.toggle("paused", d.status === "paused" || d.status === "error");
+
+  // buttons follow the state, like IDM: Pause/Resume while unfinished, Open folder when complete
+  $("pwPause").textContent = done ? "Open folder" : ACTIVE.has(d.status) ? "Pause" : "Start";
+  renderFiles(d);
+  $("pwPause").disabled = done && !d.dest;
+  $("pwCancel").textContent = ACTIVE.has(d.status) ? "Cancel" : "Close";
+
+  // filled = downloaded; empty stripes = byte ranges still missing, one stripe per connection
+  const gaps = d.size && d.gaps.length ? d.gaps.map(([a, b]) =>
+    `<div class="gap" style="left:${a * 100 / d.size}%;width:${(b - a + 1) * 100 / d.size}%"></div><div class="edge" style="left:${a * 100 / d.size}%"></div>`).join("") : "";
+  $("pwConnBar").innerHTML = `<i style="width:${d.gaps.length && d.size ? 100 : p}%;background:${color(d)}"></i>${gaps}`;
+  const hostOf = u => { try { return new URL(u).hostname; } catch { return u; } };
+  $("pwLinks").textContent = [
+    Object.keys(d.links).length ? "Per internet connection: " + Object.entries(d.links).map(([ip, b]) => `${ip} ${size(b)}`).join(" · ") : "",
+    Object.keys(d.sources || {}).length ? "Per mirror: " + Object.entries(d.sources).map(([u, b]) => `${hostOf(u)} ${size(b)}`).join(" · ") : "",
+  ].filter(Boolean).join("   |   ");
+  const workers = d.workers || []; // engines older than this page don't send them
+  $("pwRows").innerHTML = workers.length
+    ? workers.map(w => `<div class="pwrow"><span>${w.n}</span><span>${size(w.got)}</span><span title="${esc(w.info)}">${esc(w.info)}${w.via ? ` <span class="muted">via ${esc(w.via)}</span>` : ""}</span></div>`).join("")
+    : `<div class="pwrow"><span></span><span></span><span class="muted">${done ? "Finished" : "No connections yet"}</span></div>`;
+}
+
+// ---- Speed Limiter / Options on completion tabs ----
+const TABS = [["tabStatus", "panStatus"], ["tabLimit", "panLimit"], ["tabDone", "panDone"], ["tabFiles", "panFiles"]];
+
+// ---- Files tab (torrents): pick what to download; built once per torrent so ticks aren't reset each second ----
+let filesFor = null, askedFiles = null;
+const fBoxes = () => [...$("fList").querySelectorAll("input")];
+function fSummary() {
+  const d = items.find(x => x.id === pwId), on = fBoxes().filter(b => b.checked);
+  const total = on.reduce((a, b) => a + (d?.files.find(f => f.index === +b.dataset.i)?.size || 0), 0);
+  $("fSum").textContent = `${on.length} of ${fBoxes().length} files · ${size(total)}`;
+  $("fApply").disabled = !on.length;
+}
+function renderFiles(d) {
+  const files = d.files || [];
+  $("tabFiles").hidden = !files.length;
+  if (!files.length) return;
+  const choosing = (d.phase || "").startsWith("Choose");
+  if (filesFor !== d.id + ":" + files.length) { // new torrent in this window: build the list
+    filesFor = d.id + ":" + files.length;
+    $("fList").innerHTML = files.map(f => `<label class="frow"><input type="checkbox" data-i="${f.index}"${!d.selected || d.selected.includes(f.index) ? " checked" : ""}>` +
+      `<span title="${esc(f.path)}">${esc(f.path)}</span><span>${size(f.size)}</span><span data-p="${f.index}"></span></label>`).join("");
+    fSummary();
+  }
+  for (const f of files) { const c = $("fList").querySelector(`[data-p="${f.index}"]`); if (c) c.textContent = f.size ? Math.floor(100 * f.done / f.size) + "%" : ""; }
+  $("fApply").textContent = choosing ? "Start Download" : "Apply";
+  if (choosing && askedFiles !== d.id) { askedFiles = d.id; showTab("tabFiles"); } // waiting for you: go straight there
+}
+$("fList").addEventListener("change", fSummary);
+$("fAll").onclick = () => { fBoxes().forEach(b => b.checked = true); fSummary(); };
+$("fNone").onclick = () => { fBoxes().forEach(b => b.checked = false); fSummary(); };
+$("fApply").onclick = async () => {
+  const r = await post(`/api/downloads/${pwId}/files`, { selected: fBoxes().filter(b => b.checked).map(b => +b.dataset.i) });
+  if (r.ok) { showTab("tabStatus"); refresh(); }
+};
+function showTab(tabId) {
+  for (const [t, p] of TABS) {
+    const on = t === tabId;
+    $(t).setAttribute("aria-selected", on); $(t).tabIndex = on ? 0 : -1; $(p).hidden = !on;
+  }
+}
+for (const [t] of TABS) $(t).onclick = () => showTab(t);
+$("pw").querySelector(".pwtabs").addEventListener("keydown", e => {
+  const tabs = TABS.filter(([t]) => !$(t).hidden); // Files only exists for torrents
+  const i = tabs.findIndex(([t]) => t === document.activeElement.id), step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+  if (i < 0 || !step) return;
+  const next = tabs[(i + step + tabs.length) % tabs.length][0];
+  showTab(next); $(next).focus(); e.preventDefault();
+});
+
+// fill the forms from the download once per opening, so the 1-second refresh never overwrites what you type
+function fillOptions(d) {
+  $("pwLimOn").checked = d.limit > 0;
+  if (d.limit) $("pwLim").value = Math.round(d.limit / 1024);
+  $("pwLim").disabled = !(d.limit > 0);
+  const r = $("pw").querySelector(`input[name="onDone"][value="${d.on_done || "nothing"}"]`);
+  if (r) r.checked = true;
+}
+const setOptions = body => pwId && post(`/api/downloads/${pwId}/options`, body).then(refresh);
+const sendLimit = () => setOptions({ limit: $("pwLimOn").checked ? Math.max(1, +$("pwLim").value || 0) * 1024 : 0 });
+$("pwLimOn").onchange = () => { $("pwLim").disabled = !$("pwLimOn").checked; sendLimit(); };
+$("pwLim").onchange = sendLimit;
+$("pw").querySelectorAll('input[name="onDone"]').forEach(r => r.onchange = () => setOptions({ on_done: r.value }));
+
+// In the FastDL app each download's progress gets its own Windows window (this page, opened with
+// ?progress=<id>: SOLO). In a plain browser tab there are no extra windows, so it shows inline instead.
+const SOLO = new URLSearchParams(location.search).get("progress");
+if (SOLO) document.documentElement.classList.add("solo");
+
+// ---- Download File Info window (?dialog=<id>): what to save, where, before anything downloads ----
+const DIALOG = new URLSearchParams(location.search).get("dialog");
+const splitPath = p => { const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/")); return [p.slice(0, i), p.slice(i + 1)]; };
+let dfi = null; // the dialog's data from FastDL
+async function initDialog() {
+  document.documentElement.classList.add("dmode");
+  const r = await fetch(`/api/dialog/${DIALOG}`);
+  if (!r.ok) { document.body.textContent = "This download was already started or cancelled."; return; }
+  dfi = await r.json();
+  $("dfi").hidden = false;
+  $("dfiUrl").value = dfi.url; $("dfiUrl").title = dfi.url;
+  fillCats(dfi.category);
+  $("dfiSave").value = `${dfi.folders[dfi.category]}\\${dfi.filename}`;
+  $("dfiRecent").innerHTML = dfi.recent.map(f => `<option value="${esc(f + "\\" + dfi.filename)}">`).join("");
+  $("dfiExt").textContent = String(dfi.ext || "file").split(".").pop().toUpperCase().slice(0, 4);
+  $("dfiSize").textContent = dfi.size ? size(dfi.size) : "";
+  showCat();
+  $("dfiStart").focus();
+}
+function fillCats(selected) {
+  $("dfiCat").innerHTML = dfi.categories.map(c => `<option${c === selected ? " selected" : ""}>${esc(c)}</option>`).join("");
+}
+function showCat() { // the "Remember this path" box shows the category's saved folder
+  const c = $("dfiCat").value;
+  $("dfiCatName").textContent = c; $("dfiCatPath").value = dfi.folders[c];
+  $("dfiRemember").checked = false;
+}
+if (DIALOG) {
+  $("dfiCat").onchange = () => { $("dfiSave").value = `${dfi.folders[$("dfiCat").value]}\\${splitPath($("dfiSave").value)[1]}`; showCat(); };
+  $("dfiBrowse").onclick = async () => {
+    const [dir, name] = splitPath($("dfiSave").value);
+    const r = await (await post("/api/browse", { folder: dir })).json();
+    if (r.folder) $("dfiSave").value = `${r.folder}\\${name}`;
+  };
+  $("dfiAddCat").onclick = () => { $("dfiNewCat").hidden = false; $("dfiNewCatName").focus(); };
+  $("dfiNewCatOk").onclick = async () => {
+    const r = await post("/api/categories", { name: $("dfiNewCatName").value });
+    const j = await r.json();
+    if (!r.ok) { $("dfiErr").textContent = j.error; return; }
+    dfi.categories = j.categories; dfi.folders[j.name] = j.folder;
+    fillCats(j.name);
+    $("dfiNewCat").hidden = true; $("dfiNewCatName").value = ""; $("dfiCat").onchange();
+  };
+  const submit = async later => {
+    const [folder, filename] = splitPath($("dfiSave").value.trim());
+    if (!folder || !filename) { $("dfiErr").textContent = "Choose a folder and a file name."; $("dfiSave").focus(); return; }
+    const r = await post(`/api/dialog/${DIALOG}/submit`, { folder, filename, later, category: $("dfiCat").value,
+      desc: $("dfiDesc").value.trim(), remember: $("dfiRemember").checked });
+    if (!r.ok) $("dfiErr").textContent = (await r.json()).error; // FastDL closes this window when it worked
+  };
+  $("dfi").addEventListener("submit", e => { e.preventDefault(); submit(false); });
+  $("dfiLater").onclick = () => submit(true);
+  $("dfiCancel").onclick = () => post(`/api/dialog/${DIALOG}/cancel`);
+  addEventListener("keydown", e => { if (e.key === "Escape") $("dfiCancel").click(); });
+  initDialog();
+}
+
+async function openProgress(id) {
+  if (!SOLO) {
+    try {
+      const r = await (await post(`/api/progress/${id}/open`)).json();
+      if (r.window) return; // FastDL opened (or brought forward) its own window
+    } catch {}
+  }
+  showProgress(id);
+}
+function showProgress(id) {
+  const fresh = id !== pwId;
+  pwId = id;
+  renderProgress();
+  const d = items.find(x => x.id === id);
+  if (fresh && d) { fillOptions(d); showTab("tabStatus"); }
+  if (!$("pw").open) $("pw").show(); // not modal: the list stays usable
+}
+function closeProgress() {
+  if (SOLO) { post(`/api/progress/${SOLO}/close`); return; } // closes this whole window
+  pwId = null; $("pw").close();
+}
+
+$("pwX").onclick = closeProgress;
+$("pwPause").onclick = () => {
+  const d = items.find(x => x.id === pwId);
+  if (!d) return;
+  if (d.status === "done") return act(d.id, "folder");
+  run(() => act(d.id, ACTIVE.has(d.status) ? "pause" : "resume"));
+};
+$("pwCancel").onclick = () => {
+  const d = items.find(x => x.id === pwId);
+  if (d && ACTIVE.has(d.status)) act(d.id, "pause").then(refresh); // IDM's Cancel: stop, keep it in the list
+  closeProgress();
+};
+$("pwMoreBtn").onclick = () => {
+  const open = $("pwMore").style.display === "none";
+  $("pwMore").style.display = open ? "flex" : "none";
+  $("pwMoreBtn").innerHTML = open ? "&lt;&lt; Hide details" : "Show details &gt;&gt;";
+  $("pwMoreBtn").setAttribute("aria-expanded", open);
+};
+$("pw").addEventListener("cancel", e => { e.preventDefault(); closeProgress(); }); // Esc
+
+// drag the window by its title bar
+$("pwHead").addEventListener("pointerdown", e => {
+  if (e.target.closest("button")) return;
+  const box = $("pw").getBoundingClientRect(), dx = e.clientX - box.left, dy = e.clientY - box.top;
+  const move = m => {
+    $("pw").classList.add("moved");
+    $("pw").style.left = Math.max(0, Math.min(innerWidth - 80, m.clientX - dx)) + "px";
+    $("pw").style.top = Math.max(0, Math.min(innerHeight - 40, m.clientY - dy)) + "px";
+  };
+  $("pwHead").setPointerCapture(e.pointerId);
+  $("pwHead").addEventListener("pointermove", move);
+  $("pwHead").addEventListener("pointerup", () => $("pwHead").removeEventListener("pointermove", move), { once: true });
+});
+
+function renderToolbar(d) {
+  $("bResume").disabled = !d || !["paused", "error"].includes(d.status);
+  $("bPause").disabled = !d || !ACTIVE.has(d.status);
+  $("bPauseAll").disabled = !items.some(x => ACTIVE.has(x.status));
+  $("bDelete").disabled = !d;
+  $("bClear").disabled = !items.some(x => x.status === "done");
+  $("bSchedOne").disabled = !d || d.status === "done";
+  $("bSchedOneLbl").textContent = d && d.scheduled ? "Unschedule" : "Schedule";
+  $("bFolder").disabled = !d || !d.dest;
+}
+
+function renderStatus() {
+  const n = s => items.filter(d => d.status === s).length;
+  const speed = items.reduce((a, d) => a + (d.status === "downloading" ? d.speed : 0), 0);
+  $("status").innerHTML = online
+    ? `<span><span class="dot">●</span> ${n("downloading")} downloading</span><span>${n("queued")} queued</span><span>${n("paused")} paused</span>
+       <span>Total speed <b>${size(speed)}/s</b></span>
+       ${sched.enabled ? `<span>Scheduler: <b>${esc(sched.start)}${sched.stop ? "–" + esc(sched.stop) : ""}</b> · ${sched.waiting} waiting</span>` : ""}
+       <span style="flex:1"></span>
+       ${upd.update?.version ? (upd.update.state ? `<span class="updnote">${esc(upd.update.state)}</span>`
+         : `<button class="netbtn updbtn" id="bUpdate" title="${esc(upd.update.notes || "")}">Update to FastDL ${esc(upd.update.version)}</button>`) : ""}
+       ${power.note || power.pending ? `<button class="powerbtn" id="bPower">${esc(power.note ||
+         (power.pending === "shutdown" ? "Will shut down when downloads finish" : "Will sleep when downloads finish"))} · Cancel</button>` : ""}
+       ${net.links.length > 1
+         ? `<button class="netbtn" id="bNet" aria-pressed="${net.enabled}" title="${esc(net.links.join(", "))}">${net.links.length} internet connections · use all: <b>${net.enabled ? "ON" : "OFF"}</b></button>`
+         : `<span>${net.links.length} internet connection</span>`}
+       <span>${items.length} downloads</span>`
+    : `<span><span class="dot off">●</span> FastDL is not running</span>`;
+}
+
+function render() {
+  const list = visible().sort((a, b) => b.added - a.added);
+  if (sel && !items.some(d => d.id === sel)) sel = null;
+  const d = items.find(x => x.id === sel);
+  const focused = document.activeElement?.closest?.(".row");
+  renderRows(list); renderCats(); renderProgress(); renderToolbar(d); renderStatus();
+  if (focused) document.querySelector(`.row[data-id="${sel}"]`)?.focus();
+}
+
+async function refresh() {
+  try {
+    let cats;
+    [items, net, power, sched, cats, upd] = await Promise.all(["/api/downloads", "/api/links", "/api/power", "/api/schedule", "/api/categories", "/api/update"]
+      .map(u => fetch(u).then(r => r.json())));
+    customCats = cats.custom;
+    online = true;
+  }
+  catch { online = false; }
+  // a download that appeared since last time (browser extension, video button, Add URL) gets its window, like IDM
+  if (SOLO) {
+    if (!loaded) showProgress(SOLO);
+  } else {
+    // a new download: FastDL already opened its window; this only matters in a browser tab (inline)
+    const fresh = items.filter(d => !seen.has(d.id));
+    items.forEach(d => seen.add(d.id));
+    if (loaded && fresh.length) { const d = fresh[fresh.length - 1]; sel = d.id; openProgress(d.id); }
+  }
+  loaded = true;
+  render();
+}
+
+// ---- interactions ----
+function select(id) { sel = id; render(); document.querySelector(`.row[data-id="${id}"]`)?.focus(); }
+$("rows").addEventListener("click", e => { const r = e.target.closest(".row"); if (r) select(r.dataset.id); });
+$("rows").addEventListener("dblclick", e => { const r = e.target.closest(".row"); if (r) openProgress(r.dataset.id); });
+$("rows").addEventListener("keydown", e => {
+  const ids = [...document.querySelectorAll(".row")].map(r => r.dataset.id), i = ids.indexOf(sel);
+  if (e.key === "ArrowDown" && i < ids.length - 1) { e.preventDefault(); select(ids[i + 1]); }
+  if (e.key === "ArrowUp" && i > 0) { e.preventDefault(); select(ids[i - 1]); }
+  if (e.key === "Delete" && sel) $("bDelete").click();
+  if (e.key === "Enter" && sel) openProgress(sel);
+});
+$("cats").addEventListener("click", e => { const b = e.target.closest(".cat"); if (b) { cat = b.dataset.cat; render(); } });
+$("q").addEventListener("input", render);
+
+const run = async (fn) => { await fn(); refresh(); };
+$("bResume").onclick = () => run(() => act(sel, "resume"));
+$("bPause").onclick = () => run(() => act(sel, "pause"));
+$("bPauseAll").onclick = () => run(() => Promise.all(items.filter(d => ACTIVE.has(d.status)).map(d => act(d.id, "pause"))));
+// Delete: ask whether the file goes too (IDM asks the same)
+$("bDelete").onclick = () => {
+  const d = items.find(x => x.id === sel);
+  if (!d) return;
+  $("delName").textContent = nameOf(d);
+  $("delFiles").checked = false;
+  $("del").showModal();
+};
+$("delForm").addEventListener("submit", e => {
+  if (e.submitter?.value !== "ok") return;
+  const id = sel, files = $("delFiles").checked;
+  run(() => post(`/api/downloads/${id}/remove`, { files }));
+});
+
+// ---- Options ----
+$("bOptions").onclick = async () => {
+  const o = await (await fetch("/api/settings")).json();
+  $("oConns").value = String(o.conns); $("oActive").value = o.max_active; $("oFolder").value = o.folder;
+  $("oFolder").placeholder = o.default_folder; $("oLimit").value = Math.round(o.global_limit / 1024);
+  $("oMulti").checked = o.multilink; $("oAuto").checked = o.autostart; $("oAsk").checked = o.ask_browser;
+  $("oSkipMb").value = o.skip_smaller_mb; $("oSkipTypes").value = o.skip_types; $("optErr").textContent = "";
+  $("oCloseDone").checked = o.close_done;
+  $("oUpdUrl").value = o.update_url; $("oVersion").textContent = `This is FastDL ${o.version}.`; $("oUpdMsg").textContent = "";
+  $("opt").showModal();
+};
+$("oCheck").onclick = async () => {
+  $("oUpdMsg").textContent = "Checking...";
+  await post("/api/settings", { update_url: $("oUpdUrl").value.trim() }); // check the address as typed
+  const r = await (await post("/api/update/check")).json();
+  $("oUpdMsg").textContent = r.error ? r.error : r.update?.version ? `FastDL ${r.update.version} is available: use "Update" in the status bar.`
+    : $("oUpdUrl").value.trim() ? `You have the newest version (${r.current}).` : "Enter an update address first.";
+  refresh();
+};
+$("oBrowse").onclick = async () => {
+  const r = await (await post("/api/browse", { folder: $("oFolder").value || $("oFolder").placeholder })).json();
+  if (r.folder) $("oFolder").value = r.folder;
+};
+$("optForm").addEventListener("submit", async e => {
+  if (e.submitter?.value !== "save") return;
+  e.preventDefault();
+  const r = await post("/api/settings", {
+    conns: +$("oConns").value, max_active: +$("oActive").value, folder: $("oFolder").value.trim(),
+    global_limit: Math.max(0, +$("oLimit").value || 0) * 1024, multilink: $("oMulti").checked, autostart: $("oAuto").checked,
+    ask_browser: $("oAsk").checked, skip_smaller_mb: +$("oSkipMb").value || 0, skip_types: $("oSkipTypes").value,
+    close_done: $("oCloseDone").checked, update_url: $("oUpdUrl").value.trim() });
+  if (!r.ok) { $("optErr").textContent = (await r.json()).error; return; }
+  $("opt").close(); refresh();
+});
+$("bClear").onclick = () => run(() => Promise.all(items.filter(d => d.status === "done").map(d => act(d.id, "remove"))));
+$("bFolder").onclick = () => act(sel, "folder");
+
+// ---- scheduler ----
+$("bSchedOne").onclick = () => {
+  const d = items.find(x => x.id === sel);
+  if (d) run(() => post(`/api/downloads/${d.id}/options`, { scheduled: !d.scheduled }));
+};
+const dayBoxes = () => [...$("sch").querySelectorAll(".days input")];
+async function openSched() {
+  const s = await (await fetch("/api/schedule")).json();
+  $("schOn").checked = s.enabled; $("schStart").value = s.start; $("schStop").value = s.stop || "";
+  dayBoxes().forEach(b => b.checked = s.days.includes(+b.value));
+  $("schInfo").textContent = `${s.waiting} download${s.waiting === 1 ? " is" : "s are"} waiting in the schedule. Add more with "Download later" ` +
+    `or the Schedule button. The PC must be on (not asleep) at the start time.`;
+  $("schErr").textContent = "";
+  $("sch").showModal();
+}
+$("bSched").onclick = openSched;
+$("schStartNow").onclick = () => run(() => post("/api/schedule/start")).then(() => $("sch").close());
+$("schStopNow").onclick = () => run(() => post("/api/schedule/stop")).then(() => $("sch").close());
+$("schForm").addEventListener("submit", async e => {
+  if (e.submitter?.value !== "save") return;
+  e.preventDefault();
+  const r = await post("/api/schedule", { enabled: $("schOn").checked, start: $("schStart").value, stop: $("schStop").value,
+    days: dayBoxes().filter(b => b.checked).map(b => +b.value) });
+  if (!r.ok) { $("schErr").textContent = (await r.json()).error; return; }
+  $("sch").close(); refresh();
+});
+
+$("status").addEventListener("click", e => {
+  if (e.target.closest("#bNet")) run(() => post("/api/links", { enabled: !net.enabled }));
+  if (e.target.closest("#bPower")) run(() => post("/api/power/cancel"));
+  if (e.target.closest("#bUpdate")) run(() => post("/api/update/install")); // FastDL restarts on the new version
+});
+
+// ---- add dialog ----
+function detect(u) {
+  if (/^magnet:|\.torrent(\?|#|$)/i.test(u)) return ["TOR", "#6d3fc0", "Torrent", "Downloaded with aria2 (BitTorrent)"];
+  if (/(youtube\.com|youtu\.be|bilibili\.|dailymotion\.|vimeo\.|tiktok\.|instagram\.|facebook\.|twitter\.com|x\.com|twitch\.|reddit\.)/i.test(u))
+    return ["VID", "#1f5fd6", "Video page", "Best quality with yt-dlp, video and audio merged into one file"];
+  if (/^https?:\/\/\S+/i.test(u)) return ["FILE", "#5f6672", "File", "Many connections at once, can pause and resume"];
+  return null;
+}
+// ---- .torrent file from disk ----
+let torrentFile = null; // { name, b64 } while a file is picked instead of a link
+const readB64 = f => new Promise((ok, bad) => {
+  const r = new FileReader();
+  r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = bad;
+  r.readAsDataURL(f);
+});
+async function pickTorrent(f) {
+  if (!f) return;
+  if (!/\.torrent$/i.test(f.name)) { $("derr").textContent = "Choose a .torrent file."; return; }
+  torrentFile = { name: f.name, b64: await readB64(f) };
+  $("addUrl").value = f.name; $("addUrl").readOnly = true; $("mirrorField").hidden = true; // mirrors: plain files only
+  $("bTorrentClear").hidden = false; $("derr").textContent = "";
+  showDetect();
+}
+function clearTorrent() {
+  torrentFile = null; $("addTorrent").value = ""; $("mirrorField").hidden = false;
+  $("addUrl").readOnly = false; $("addUrl").value = ""; $("bTorrentClear").hidden = true;
+  showDetect();
+}
+$("bTorrent").onclick = () => $("addTorrent").click();
+$("addTorrent").onchange = () => pickTorrent($("addTorrent").files[0]);
+$("bTorrentClear").onclick = () => { clearTorrent(); $("addUrl").focus(); };
+// drop a .torrent anywhere on FastDL: opens the dialog with it
+addEventListener("dragover", e => { if ([...e.dataTransfer.items].some(i => i.kind === "file")) e.preventDefault(); });
+addEventListener("drop", async e => {
+  if (!e.dataTransfer.files.length) return;
+  e.preventDefault(); // any dropped file would otherwise replace the app in its window
+  const f = [...e.dataTransfer.files].find(x => /\.torrent$/i.test(x.name));
+  if (!f) return;
+  if (!$("dlg").open) await openAdd();
+  pickTorrent(f);
+});
+
+function showDetect() {
+  if (torrentFile) {
+    $("detect").hidden = false;
+    Object.assign($("detChip").style, { color: "#6d3fc0", background: "#6d3fc01a" });
+    $("detChip").textContent = "TOR"; $("detTitle").textContent = "Torrent file: " + torrentFile.name;
+    $("detSub").textContent = "Downloaded with aria2 (BitTorrent)";
+    return;
+  }
+  const r = detect($("addUrl").value.trim());
+  $("detect").hidden = !r;
+  if (r) {
+    const [ext, c, title, sub] = r;
+    Object.assign($("detChip").style, { color: c, background: c + "1a" });
+    $("detChip").textContent = ext; $("detTitle").textContent = title; $("detSub").textContent = sub;
+  }
+}
+$("addUrl").addEventListener("input", showDetect);
+$("addConns").addEventListener("change", () => { $("connHint").hidden = +$("addConns").value <= 8; });
+
+async function openAdd() {
+  $("addForm").reset(); $("derr").textContent = ""; $("connHint").hidden = true;
+  torrentFile = null; $("addUrl").readOnly = false; $("bTorrentClear").hidden = true; $("mirrorField").hidden = false;
+  try { $("addConns").value = String((await (await fetch("/api/settings")).json()).conns); } catch {} // Options default
+  try { const clip = (await navigator.clipboard.readText()).trim(); if (detect(clip)) $("addUrl").value = clip; } catch {}
+  showDetect();
+  $("dlg").showModal();
+  $("addUrl").select();
+}
+$("bAdd").onclick = openAdd;
+addEventListener("keydown", e => { if (e.ctrlKey && e.key.toLowerCase() === "n") { e.preventDefault(); openAdd(); } });
+
+$("addForm").addEventListener("submit", async e => {
+  const how = e.submitter?.value;
+  if (how === "cancel") return;
+  e.preventDefault();
+  try {
+    const common = { folder: $("addFolder").value.trim(), later: how === "later", mirrors: $("addMirrors").value };
+    const r = await post("/api/downloads", torrentFile
+      ? { ...common, torrent: torrentFile.b64, torrent_name: torrentFile.name }
+      : { ...common, url: $("addUrl").value.trim(), conns: +$("addConns").value });
+    const body = await r.json();
+    if (!r.ok) { $("derr").textContent = body.error; return; }
+    sel = body.id; cat = "All Downloads";
+    $("dlg").close();
+    refresh();
+  } catch { $("derr").textContent = "FastDL is not running."; }
+});
+
+if (!DIALOG) { // the Download File Info window doesn't need the live list
+  refresh();
+  // hidden in the tray or minimized: stop asking every second (no CPU in the background); catch up on return
+  setInterval(() => { if (!document.hidden) refresh(); }, 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+}
+</script>
+</body>
+</html>
