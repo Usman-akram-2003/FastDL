@@ -26,6 +26,9 @@ def find_tool(name):
     found = shutil.which(name)
     if found:
         return found
+    own = os.path.join(TOOLS_DIR, name + ".exe")  # downloaded by fetch_tool: PCs without winget
+    if os.path.isfile(own):
+        return own
     local = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
     # the real files first: WinGet\Links holds symlinks, and a FastDL started by its installer inherited a
     # Windows 11 "untrusted mount point" guard that refuses to follow them (WinError 448)
@@ -44,6 +47,7 @@ if os.path.isdir(_links_dir) and _links_dir.lower() not in os.environ.get("PATH"
 # FASTDL_HOME / FASTDL_PORT: a separate test copy that can't touch the real list, settings or port
 HOME = os.environ.get("FASTDL_HOME") or os.path.join(os.path.expanduser("~"), ".fastdl")
 PYLIB = os.path.join(os.path.expanduser("~"), ".fastdl", "pylib")  # newer yt-dlp from update_deps.py
+TOOLS_DIR = os.path.join(HOME, "tools")  # aria2c / ffmpeg / deno downloaded by FastDL itself (no winget needed)
 if FROZEN and os.path.isdir(os.path.join(PYLIB, "yt_dlp")):
     # YouTube breaks old yt-dlp versions, so the newer copy must win over the one frozen into the .exe.
     # A plain sys.path entry isn't enough: PyInstaller's importer still serves its frozen copies first,
@@ -66,7 +70,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.6"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.7"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -822,14 +826,88 @@ def aria2(method, *params):
         raise IOError(json.load(e).get("error", {}).get("message", str(e)))
 
 
+# Helper programs for torrents (aria2c), video merging (ffmpeg) and YouTube (deno): name -> (zip, its SHA-256 or
+# the address of a file that lists it). Official release pages; the zip must match the checksum before anything is run.
+TOOLS = {
+    "aria2c": ("https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip",
+               "67d015301eef0b612191212d564c5bb0a14b5b9c4796b76454276a4d28d9b288"),
+    "ffmpeg": ("https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+               "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256"),
+    "deno": ("https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip",
+             "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip.sha256sum"),
+}
+WINGET_IDS = {"aria2c": "aria2.aria2", "ffmpeg": "Gyan.FFmpeg", "deno": "DenoLand.Deno"}
+
+
+def fetch_tool(name):
+    """Download a helper program straight from its official release into TOOLS_DIR; returns the .exe path.
+    Uses FastDL's own download engine (many connections: a 100 MB ffmpeg took minutes over one)."""
+    url, want = TOOLS[name]
+    if not re.fullmatch(r"[0-9a-f]{64}", want):  # a checksum file: Deno prints "Hash : ABC...", Gyan just the hash
+        with urllib.request.urlopen(want, timeout=30) as r:
+            want = parse_checksum(r.read().decode("utf-8", "replace"))
+    if not want or len(want) != 64:
+        raise IOError(f"no SHA-256 published for {name}")
+    os.makedirs(TOOLS_DIR, exist_ok=True)
+    zpath, exe = os.path.join(TOOLS_DIR, name + ".zip"), os.path.join(TOOLS_DIR, name + ".exe")
+    for p in (zpath, zpath + ".fdpart", zpath + ".fdl"):  # leftovers of an interrupted try: start clean
+        if os.path.exists(p):
+            os.remove(p)
+    try:
+        d = Download(url, TOOLS_DIR, title=name + ".zip")
+        d.run()
+        if d.status != "done":
+            raise IOError(d.error or "download failed")
+        h = hashlib.sha256()
+        with open(d.dest, "rb") as f:
+            while chunk := f.read(1 << 20):
+                h.update(chunk)
+        if h.hexdigest() != want:
+            raise IOError(f"{name}: the download doesn't match its published checksum, not using it")
+        import zipfile
+        with zipfile.ZipFile(d.dest) as z:
+            member = next(n for n in z.namelist() if n.lower().rsplit("/", 1)[-1] == name + ".exe")
+            with z.open(member) as src, open(exe + ".tmp", "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        os.replace(exe + ".tmp", exe)
+    finally:
+        for p in glob.glob(glob.escape(zpath) + "*") + [exe + ".tmp"]:
+            if os.path.exists(p):
+                os.remove(p)
+    return exe
+
+
+def install_tools():
+    """`FastDL.exe --install-tools`, run by the installer: whichever of the helpers is missing, via winget when the
+    PC has it, otherwise (a clean Windows has no winget) straight from the official release."""
+    for name in TOOLS:
+        if find_tool(name):
+            continue
+        if shutil.which("winget"):
+            try:
+                subprocess.run(["winget", "install", "--id", WINGET_IDS[name], "-e", "--silent", "--accept-source-agreements",
+                                "--accept-package-agreements"], timeout=900, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print("winget", name, e)
+        if not find_tool(name):
+            try:
+                fetch_tool(name)
+            except Exception as e:  # offline, or the site changed: say so in the log, the app still works for files
+                print("install", name, "failed:", e)
+
+
 def start_aria2():
     global aria_proc
     with aria_lock:
         if aria_proc and aria_proc.poll() is None:
             return
         exe = find_tool("aria2c")
-        if not exe:
-            raise IOError(f"aria2c not found (looked in PATH and {_links_dir}), install it: winget install aria2.aria2")
+        if not exe:  # a PC without winget (or whose installer step was skipped): get it now, it's 2.5 MB
+            try:
+                exe = fetch_tool("aria2c")
+            except Exception as e:
+                raise IOError(f"Torrents need aria2c and FastDL could not download it ({friendly_error(e)}). "
+                              "Check your internet connection, then press Start.")
         aria_proc = subprocess.Popen(
             [exe, "--enable-rpc", f"--rpc-listen-port={ARIA_PORT}", f"--rpc-secret={ARIA_SECRET}",
              "--seed-time=0", "--continue=true", f"--stop-with-process={os.getpid()}", "--quiet",
@@ -2130,7 +2208,9 @@ def windows_setup():
 if __name__ == "__main__":
     tray_start = "--tray" in sys.argv[1:]  # started with Windows: straight to the tray, no window
     args = [a for a in sys.argv[1:] if a != "--tray"]
-    if args:
+    if args == ["--install-tools"]:
+        install_tools()
+    elif args:
         cli(args[0], args[1] if len(args) > 1 else ".")
     else:
         url = f"http://127.0.0.1:{PORT}"

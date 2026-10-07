@@ -28,7 +28,7 @@
 ## Install
 
 1. Download **FastDL-Setup.exe** from [Releases](https://github.com/Usman-akram-2003/FastDL/releases/latest) and run it. No admin rights needed.
-2. Keep *Install ffmpeg, aria2 and Deno* ticked: they're needed for videos and torrents (installed with winget).
+2. Keep *Install ffmpeg, aria2 and Deno* ticked (about 150 MB): they're needed for videos and torrents. FastDL uses winget if you have it, otherwise downloads them from their official release pages and checks their checksums.
 3. Windows may say *"Windows protected your PC"* because FastDL isn't code-signed yet: click **More info → Run anyway**.
 
 ### Browser button (Chrome, Edge, Brave)
@@ -56,6 +56,7 @@ pip install -r requirements.txt
 winget install Gyan.FFmpeg aria2.aria2 DenoLand.Deno
 python fastdl.py            # run it from source
 python test_fastdl.py       # tests (local servers; a few need the internet)
+# clean-PC install test: turn on Windows Sandbox, run build.py, double-click sandboxresh-pc.wsb, read sandbox-resultseport.txt
 python build.py             # dist\FastDL\ (app), dist\FastDL-Setup.exe, dist\latest.json
 python firefox.py           # dist\FastDL-Firefox.zip (the Firefox extension)
 ```

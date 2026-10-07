@@ -558,4 +558,52 @@ finally:
     fastdl.set_proxy("")
 assert os.environ.get("HTTP_PROXY") == fastdl._proxy_env0["HTTP_PROXY"], "empty must restore what was there"
 
+# ---- helper programs: fetched from a release zip only if it matches its published checksum ----
+import io, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("tool-1.0/README.txt", "docs")
+    z.writestr("tool-1.0/bin/faketool.exe", b"MZ fake program")
+ZIP = buf.getvalue()
+
+
+class T(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = {"/t.zip": ZIP, "/t.zip.sha256": f"Algorithm : SHA256\nHash      : {hashlib.sha256(ZIP).hexdigest().upper()}\nPath : C:\a\t.zip\n".encode(),
+                "/bad.sha256": b"0" * 64}.get(self.path)
+        self.send_response(200 if body else 404)
+        self.send_header("Content-Length", str(len(body or b"")))
+        self.end_headers()
+        self.wfile.write(body or b"")
+
+    def log_message(self, *a):
+        pass
+
+
+tsrv = ThreadingHTTPServer(("127.0.0.1", 0), T)
+threading.Thread(target=tsrv.serve_forever, daemon=True).start()
+tb = f"http://127.0.0.1:{tsrv.server_port}"
+real_tools, real_dir = dict(fastdl.TOOLS), fastdl.TOOLS_DIR
+with tempfile.TemporaryDirectory() as tools:
+    fastdl.TOOLS_DIR = tools
+    fastdl.TOOLS["faketool"] = (tb + "/t.zip", tb + "/t.zip.sha256")  # checksum in a Deno-style file
+    exe = fastdl.fetch_tool("faketool")
+    assert open(exe, "rb").read() == b"MZ fake program" and exe == os.path.join(tools, "faketool.exe"), exe
+    assert fastdl.find_tool("faketool") == exe, "find_tool must look in FastDL's own tools folder"
+    assert sorted(os.listdir(tools)) == ["faketool.exe"], "no leftovers: " + str(os.listdir(tools))
+    os.remove(exe)
+    fastdl.TOOLS["faketool"] = (tb + "/t.zip", hashlib.sha256(ZIP).hexdigest())  # pinned in the code
+    assert open(fastdl.fetch_tool("faketool"), "rb").read() == b"MZ fake program"
+    os.remove(exe)
+    for bad in (tb + "/bad.sha256", "0" * 64):  # a zip that doesn't match is never unpacked or used
+        fastdl.TOOLS["faketool"] = (tb + "/t.zip", bad)
+        try:
+            fastdl.fetch_tool("faketool")
+            raise AssertionError("a wrong checksum must be refused")
+        except IOError as e:
+            assert "checksum" in str(e), e
+        assert os.listdir(tools) == [], "refused download must leave nothing behind: " + str(os.listdir(tools))
+fastdl.TOOLS.clear(); fastdl.TOOLS.update(real_tools); fastdl.TOOLS_DIR = real_dir
+assert all(len(v[1]) == 64 or v[1].startswith("https://") for v in fastdl.TOOLS.values())
+
 print("all good")

@@ -3,3 +3,4 @@ build/
 dist/
 test-downloads/
 *.pyc
+sandbox-results/

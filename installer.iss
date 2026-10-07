@@ -31,7 +31,7 @@ SignedUninstaller=yes
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"
-Name: helpers; Description: "Install ffmpeg, aria2 and Deno with winget (needed for YouTube and torrents)"
+Name: helpers; Description: "Install ffmpeg, aria2 and Deno (needed for YouTube and torrents; about 150 MB, needs internet)"
 
 [Files]
 Source: "dist\FastDL\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -42,9 +42,8 @@ Name: "{autoprograms}\FastDL"; Filename: "{app}\FastDL.exe"
 Name: "{autodesktop}\FastDL"; Filename: "{app}\FastDL.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{cmd}"; Parameters: "/c winget install --id Gyan.FFmpeg -e --silent --accept-source-agreements --accept-package-agreements"; StatusMsg: "Installing ffmpeg..."; Flags: runhidden waituntilterminated; Tasks: helpers
-Filename: "{cmd}"; Parameters: "/c winget install --id aria2.aria2 -e --silent --accept-source-agreements --accept-package-agreements"; StatusMsg: "Installing aria2..."; Flags: runhidden waituntilterminated; Tasks: helpers
-Filename: "{cmd}"; Parameters: "/c winget install --id DenoLand.Deno -e --silent --accept-source-agreements --accept-package-agreements"; StatusMsg: "Installing Deno..."; Flags: runhidden waituntilterminated; Tasks: helpers
+; FastDL fetches whichever helper is missing: with winget when the PC has it, else from the official releases
+Filename: "{app}\FastDL.exe"; Parameters: "--install-tools"; StatusMsg: "Installing ffmpeg, aria2 and Deno (about 150 MB)..."; Flags: runhidden waituntilterminated; Tasks: helpers
 Filename: "{win}\explorer.exe"; Parameters: """{app}\FastDL.exe"""; Description: "Start FastDL"; Flags: nowait postinstall skipifsilent
 ; a silent install is FastDL updating itself: start the new version when done.
 ; Through Explorer: FastDL must not inherit the installer's redirection guard (it blocks winget's tool links)
@@ -59,3 +58,4 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.fastdl.launcher"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\com.fastdl.launcher"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.fastdl.launcher"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\com.fastdl.launcher"; Flags: uninsdeletekey
