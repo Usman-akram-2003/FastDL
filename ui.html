@@ -10,6 +10,20 @@
     --bg: #eef0f3; --win: #ffffff; --bar: #f7f8fa; --side: #f4f5f7; --line: #d9dce1; --line2: #eceef1;
     --fg: #1d2127; --muted: #5f6672; --accent: #1f5fd6; --accent-fg: #ffffff; --sel: #dbe7fc; --alt: #f8f9fb; --hover: #eef3fc;
     --ok: #16803c; --warn: #a86400; --err: #c62828; --track: #e3e6ea;
+    color-scheme: light dark; /* scrollbars, selects and checkboxes follow too */
+  }
+  /* Windows set to dark: dark app (the window's title bar follows on its own, pywebview handles it) */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c; --win: #1f2227; --bar: #24272d; --side: #1b1d21; --line: #3a3f47; --line2: #2c3036;
+      --fg: #e6e8eb; --muted: #9aa1ac; --accent: #4d8bf5; --accent-fg: #ffffff; --sel: #263a5e; --alt: #222529; --hover: #2a3242;
+      --ok: #3cbf5f; --warn: #e0a030; --err: #ef5350; --track: #33373e;
+    }
+    .tb:hover:not(:disabled) { border-color: #3d5a8f; }
+    .btn.primary:hover { background: #3a78e8; }
+    .big .edge { background: rgba(255,255,255,.3); }
+    #pw { border-color: #4a505a; }
+    .chip { filter: brightness(1.7); } /* file-type colours are set inline for a light background */
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -155,7 +169,7 @@
   .netbtn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
   .netbtn[aria-pressed="true"] b { color: var(--accent); }
 
-  dialog { width: min(560px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,.2); color: var(--fg); }
+  dialog { width: min(560px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 50px rgba(0,0,0,.2); color: var(--fg); background: var(--win); }
   dialog::backdrop { background: rgba(20, 24, 31, .35); }
   dialog h2 { margin: 0; padding: 12px 18px; font-size: 14px; border-bottom: 1px solid var(--line); background: var(--bar); }
   .dbody { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
