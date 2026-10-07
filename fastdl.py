@@ -66,7 +66,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.5"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.6"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)

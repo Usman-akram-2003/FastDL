@@ -491,6 +491,27 @@
   </form>
 </dialog>
 
+<dialog id="multi" aria-labelledby="multiTitle">
+  <form method="dialog" id="multiForm">
+    <h2 id="multiTitle">Add several links</h2>
+    <div class="dbody">
+      <label class="field"><span>One link per line. A pattern like <code>https://site.com/file[01-14].zip</code> becomes 14 links.</span>
+        <textarea id="multiText" rows="9" spellcheck="false" placeholder="https://site.com/file.part01.rar&#10;https://site.com/file.part02.rar"></textarea>
+      </label>
+      <label class="field"><span>Save to (leave empty for your Downloads folder; put all parts of one archive in the same folder)</span>
+        <input id="multiFolder" autocomplete="off" placeholder="Downloads folder">
+      </label>
+      <small class="muted" id="multiCount"></small>
+      <div class="derr" id="multiErr"></div>
+    </div>
+    <div class="dfoot">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn" value="later">Download later</button>
+      <button class="btn primary" value="start" id="multiStart" disabled>Start all</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="dlg">
   <form method="dialog" id="addForm">
     <h2>Add download</h2>
@@ -501,6 +522,7 @@
       <div class="torrow">
         <span class="muted">or</span>
         <button type="button" class="btn" id="bTorrent">Open .torrent file...</button>
+        <button type="button" class="btn" id="bMulti" title="Paste a list of links, one per line">Add many links...</button>
         <button type="button" class="btn" id="bTorrentClear" hidden>Use a link instead</button>
         <input type="file" id="addTorrent" accept=".torrent,application/x-bittorrent" hidden>
         <span class="muted">You can also drop a .torrent file on this window.</span>
@@ -577,6 +599,7 @@ const ACTIVE = new Set(["downloading", "queued"]);
 
 let items = [], sel = null, cat = "All Downloads", online = true, net = { enabled: true, links: [] };
 let power = { pending: null, note: "" }, sched = { enabled: false }, customCats = [], upd = {};
+let quiet = 0; // > 0 while many downloads are being added at once (batch, grabber): no progress window for them
 let seen = new Set(), loaded = false; // ids already shown, so only new downloads pop a progress window
 
 function inCat(d, c) {
@@ -917,7 +940,7 @@ async function refresh() {
     // a new download: FastDL already opened its window; this only matters in a browser tab (inline)
     const fresh = items.filter(d => !seen.has(d.id));
     items.forEach(d => seen.add(d.id));
-    if (loaded && fresh.length) { const d = fresh[fresh.length - 1]; sel = d.id; openProgress(d.id); }
+    if (loaded && fresh.length && !quiet) { const d = fresh[fresh.length - 1]; sel = d.id; openProgress(d.id); }
   }
   loaded = true;
   render();
@@ -1031,10 +1054,11 @@ $("grabForm").addEventListener("submit", async e => {
   e.preventDefault();
   const chosen = new Set(grabBoxes().filter(b => b.checked).map(b => b.dataset.u));
   const folder = $("grabFolder").value.trim(), page = $("grabUrl").value.trim();
-  $("grabGo").disabled = true;
+  $("grabGo").disabled = true; quiet++;
   for (const l of grabbed.filter(l => chosen.has(l.url)))
-    await post("/api/downloads", { url: l.url, referer: page, kind: "file", folder, category: l.cat, filename: l.name, quiet: true });
-  $("grab").close(); cat = "All Downloads"; refresh();
+    await post("/api/downloads", { url: l.url, referer: page, kind: "file", folder, category: l.cat, filename: l.name, quiet: true }).catch(() => {});
+  await refresh(); quiet--;
+  $("grab").close(); cat = "All Downloads";
 });
 
 $("bClear").onclick = () => run(() => Promise.all(items.filter(d => d.status === "done").map(d => act(d.id, "remove"))));
@@ -1071,6 +1095,49 @@ $("status").addEventListener("click", e => {
   if (e.target.closest("#bNet")) run(() => post("/api/links", { enabled: !net.enabled }));
   if (e.target.closest("#bPower")) run(() => post("/api/power/cancel"));
   if (e.target.closest("#bUpdate")) run(() => post("/api/update/install")); // FastDL restarts on the new version
+});
+
+// ---- several links at once ----
+// one line -> its links: [01-14] counts up (keeping the zero padding); http(s) and magnet links only, no repeats
+function expandLine(line) {
+  const m = line.match(/\[(\d+)-(\d+)\]/);
+  if (!m) return [line];
+  const a = +m[1], b = +m[2];
+  if (b < a || b - a >= 1000) return [line];
+  return Array.from({ length: b - a + 1 }, (_, i) => line.replace(m[0], String(a + i).padStart(m[1].length, "0")));
+}
+const multiLinks = () => [...new Set($("multiText").value.split(/\s+/).filter(l => /^(https?:\/\/|magnet:)/i.test(l)).flatMap(expandLine))];
+function multiCount() {
+  const n = multiLinks().length;
+  $("multiCount").textContent = n ? `${n} link${n === 1 ? "" : "s"}. FastDL runs a few at a time (Options: downloads at the same time) and queues the rest.` : "";
+  $("multiStart").disabled = !n;
+}
+function openMulti(text) {
+  $("multiText").value = text || ""; $("multiFolder").value = ""; $("multiErr").textContent = "";
+  multiCount(); $("multi").showModal(); $("multiText").focus();
+}
+$("multiText").addEventListener("input", multiCount);
+$("bMulti").onclick = () => { const t = $("addUrl").value.trim(); $("dlg").close(); openMulti(/^(https?:|magnet:)/i.test(t) ? t : ""); };
+// pasting several lines into the address box opens this list instead
+$("addUrl").addEventListener("paste", e => {
+  const t = (e.clipboardData?.getData("text") || "").trim();
+  if (t.split(/\s+/).filter(l => /^(https?:\/\/|magnet:)/i.test(l)).length > 1) { e.preventDefault(); $("dlg").close(); openMulti(t); }
+});
+$("multiForm").addEventListener("submit", async e => {
+  const how = e.submitter?.value;
+  if (how === "cancel") return;
+  e.preventDefault();
+  const links = multiLinks(), folder = $("multiFolder").value.trim();
+  if (!links.length) return;
+  $("multiStart").disabled = true; let failed = [];
+  quiet++;
+  for (const url of links) {
+    try { const r = await post("/api/downloads", { url, folder, later: how === "later", quiet: true }); if (!r.ok) failed.push(url); }
+    catch { failed.push(url); }
+  }
+  await refresh(); quiet--;
+  if (failed.length) { $("multiErr").textContent = `${links.length - failed.length} added, ${failed.length} refused (first: ${failed[0]})`; $("multiStart").disabled = false; return; }
+  $("multi").close(); cat = "All Downloads";
 });
 
 // ---- add dialog ----
