@@ -1,5 +1,5 @@
 """python test_fastdl.py - local server check: splitting, pause/resume, no-range fallback, name clash."""
-import glob, os, tempfile, threading, time
+import glob, os, tempfile, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import fastdl
 from fastdl import Download
@@ -473,5 +473,89 @@ m.power_note, m.power_pending = "", "sleep"
 m.cancel_power()
 assert m.power_pending is None
 fastdl.power = real_power
+
+# ---- checksum: pasted text -> hash, finished file checked, mismatch reported ----
+import hashlib
+good = hashlib.sha256(DATA).hexdigest()
+assert fastdl.parse_checksum("") == "" and fastdl.parse_checksum("nope") is None
+assert fastdl.parse_checksum(f"SHA256: {good.upper()}  file.bin") == good
+assert fastdl.parse_checksum("abc123") is None, "wrong length is not a hash"
+with tempfile.TemporaryDirectory() as d:
+    c = Download(f"{base}/file.bin", d)
+    c.checksum = good
+    c.run()
+    fastdl.verify(c)
+    assert c.status == "done" and c.verified is True and not c.error, (c.verified, c.error)
+    c.checksum = hashlib.md5(b"other").hexdigest()
+    fastdl.verify(c)
+    assert c.verified is False and "does not match" in c.error
+    assert fastdl.Download.info(c)["verified"] is False
+
+# ---- site grabber: files a page links to, relative links resolved, pages and duplicates left out ----
+PAGE = (b'<base href="/docs/"><a href="a.pdf">A</a><a href="/x/b.ZIP">B</a><a href="page.html">p</a><a href="a.pdf">dup</a>'
+        b'<img src="pic.png" srcset="pic.png 1x, big.jpg 2x"><a href="mailto:x@y.z">m</a><a href="#top">t</a>'
+        b'<video src="https://cdn.example.com/v.mp4"></video><a href="https://cdn.example.com/dir/">d</a>')
+
+
+class G(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body, kind = (PAGE, "text/html") if self.path == "/page" else (b"x" * 10, "application/zip")
+        self.send_response(200)
+        self.send_header("Content-Type", kind)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+gsrv = ThreadingHTTPServer(("127.0.0.1", 0), G)
+threading.Thread(target=gsrv.serve_forever, daemon=True).start()
+gbase = f"http://127.0.0.1:{gsrv.server_port}"
+found = {l["url"].replace(gbase, ""): l for l in fastdl.grab_links(gbase + "/page", {})}
+assert set(found) == {"/docs/a.pdf", "/x/b.ZIP", "/docs/pic.png", "/docs/big.jpg", "https://cdn.example.com/v.mp4"}, sorted(found)
+assert found["/docs/a.pdf"]["cat"] == "Documents" and found["/x/b.ZIP"]["cat"] == "Compressed"
+assert found["/docs/pic.png"]["cat"] == "Images" and found["https://cdn.example.com/v.mp4"]["cat"] == "Video"
+try:
+    fastdl.grab_links(gbase + "/file.zip", {})
+    raise AssertionError("a file is not a page")
+except ValueError:
+    pass
+
+# ---- proxy: Options value checked; requests really go through it; "none" skips Windows' proxy ----
+assert all(fastdl.proxy_ok(x) for x in ("", "none", "http://127.0.0.1:8080", "http://u:p@proxy.local:3128", "https://p.example.com:443"))
+assert not any(fastdl.proxy_ok(x) for x in ("proxy:8080", "http://nohost", "socks5://h:1", "http://h:8080/x y", "javascript:alert(1)"))
+seen_by_proxy = []
+
+
+class P(BaseHTTPRequestHandler):  # a proxy gets the full URL in the request line
+    def do_GET(self):
+        seen_by_proxy.append(self.path)
+        self.send_response(200)
+        self.send_header("Content-Length", "5")
+        self.end_headers()
+        self.wfile.write(b"hello")
+
+    def log_message(self, *a):
+        pass
+
+
+psrv = ThreadingHTTPServer(("127.0.0.1", 0), P)
+threading.Thread(target=psrv.serve_forever, daemon=True).start()
+try:
+    fastdl.set_proxy(f"http://127.0.0.1:{psrv.server_port}")
+    with fastdl.opener(None).open("http://files.invalid/a.bin", timeout=10) as r:
+        assert r.read() == b"hello"
+    assert seen_by_proxy == ["http://files.invalid/a.bin"], seen_by_proxy
+    with fastdl.opener(None).open(f"{gbase}/file.zip", timeout=10) as r:  # this PC never goes through the proxy
+        assert r.read() == b"x" * 10
+    assert len(seen_by_proxy) == 1, "localhost must bypass the proxy"
+    fastdl.set_proxy("none")
+    assert os.environ["NO_PROXY"] == "*"
+    assert urllib.request.getproxies().get("http") is None
+finally:
+    fastdl.set_proxy("")
+assert os.environ.get("HTTP_PROXY") == fastdl._proxy_env0["HTTP_PROXY"], "empty must restore what was there"
 
 print("all good")

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastDL - a fast, free download manager for Windows</title>
+<meta name="description" content="FastDL downloads files, videos and torrents with many connections at once, like IDM, and it's free. Windows 10 and 11.">
+<link rel="icon" href="img/favicon.png">
+<style>
+  :root {
+    --bg: #ffffff; --alt: #f5f7fa; --fg: #1d2127; --muted: #5a6270; --line: #dde1e7;
+    --accent: #1f5fd6; --accent-fg: #fff; --accent-hover: #1a51b8; --card: #ffffff;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161a; --alt: #1a1d22; --fg: #e8eaed; --muted: #9aa1ac; --line: #30343b;
+      --accent: #4d8bf5; --accent-hover: #6a9ff7; --card: #1d2025; }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+  nav { display: flex; align-items: center; gap: 18px; padding: 14px 0; }
+  nav img { width: 34px; height: 34px; border-radius: 8px; }
+  nav b { font-size: 18px; margin-right: auto; }
+  nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
+  nav a:hover { color: var(--fg); }
+  .hero { text-align: center; padding: 48px 0 28px; }
+  .hero img.logo { width: 96px; height: 96px; border-radius: 20px; }
+  h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 18px 0 12px; letter-spacing: -.02em; }
+  .lead { max-width: 640px; margin: 0 auto 26px; color: var(--muted); font-size: 18px; }
+  .btn { display: inline-block; padding: 13px 26px; border-radius: 8px; background: var(--accent); color: var(--accent-fg); text-decoration: none; font-weight: 600; font-size: 17px; }
+  .btn:hover { background: var(--accent-hover); }
+  .btn.alt { background: transparent; color: var(--fg); border: 1px solid var(--line); margin-left: 8px; }
+  .btn.alt:hover { background: var(--alt); }
+  .note { color: var(--muted); font-size: 14px; margin-top: 12px; }
+  .shot { margin: 36px auto 0; max-width: 980px; }
+  .shot img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.14); }
+  section { padding: 56px 0 8px; }
+  h2 { font-size: 28px; margin: 0 0 22px; letter-spacing: -.01em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .alt-bg { background: var(--alt); margin-top: 56px; padding-bottom: 56px; }
+  .steps { padding-left: 22px; } .steps li { margin: 8px 0; }
+  code { background: var(--alt); border: 1px solid var(--line); padding: 1px 6px; border-radius: 4px; font-size: .9em; }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
+  details { border-bottom: 1px solid var(--line); padding: 14px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  details p { color: var(--muted); margin: 8px 0 0; }
+  footer { padding: 36px 0 48px; color: var(--muted); font-size: 14px; text-align: center; }
+  @media (max-width: 560px) { nav a.hide { display: none; } .btn.alt { margin: 10px 0 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <img src="img/logo.png" alt=""><b>FastDL</b>
+    <a class="hide" href="#features">Features</a><a class="hide" href="#install">Install</a><a class="hide" href="#faq">FAQ</a>
+    <a href="https://github.com/Usman-akram-2003/FastDL">GitHub</a>
+  </nav>
+
+  <header class="hero">
+    <img class="logo" src="img/logo.png" alt="FastDL logo">
+    <h1>Download faster. Free.</h1>
+    <p class="lead">A download manager for Windows that splits every file over many connections at once: files, videos and torrents, with a button in your browser, like IDM.</p>
+    <a class="btn" href="https://github.com/Usman-akram-2003/FastDL/releases/latest/download/FastDL-Setup.exe">Download FastDL for Windows</a>
+    <a class="btn alt" href="https://github.com/Usman-akram-2003/FastDL/releases/latest">All versions</a>
+    <p class="note">Windows 10 and 11 &middot; no admin rights needed &middot; no ads, no account</p>
+    <div class="shot">
+      <picture>
+        <source srcset="img/main-dark.png" media="(prefers-color-scheme: dark)">
+        <img src="img/main-light.png" alt="FastDL's download list: three downloads in progress and three finished" width="1280" height="520">
+      </picture>
+    </div>
+    <p class="note">FastDL follows your Windows light or dark setting.</p>
+  </header>
+
+  <section id="features">
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>Fast downloads</h3><p>Up to 32 connections per file. A connection that finishes takes over half of the biggest part still left, so none sits idle. Pause and resume any time, even after a restart.</p></div>
+      <div class="card"><h3>Videos</h3><p>YouTube, Bilibili, Dailymotion, OK.ru and about 1,800 other sites. Pick the quality, audio only or subtitles, or <i>Download all</i>.</p></div>
+      <div class="card"><h3>Torrents</h3><p>Magnet links and .torrent files. Choose which files you want before anything downloads.</p></div>
+      <div class="card"><h3>Browser button</h3><p>Hover a video for <i>Download this video</i>. Browser downloads go to FastDL, with a <i>Download File Info</i> window first.</p></div>
+      <div class="card"><h3>Site grabber</h3><p>Give it a web page and it lists every file the page links to: PDFs, zips, images, videos. Filter by type, tick what you want, download.</p></div>
+      <div class="card"><h3>Two connections at once</h3><p>Wi-Fi plus Ethernet plus phone tethering, for up to about twice the speed.</p></div>
+      <div class="card"><h3>Mirrors</h3><p>Download one file from several servers at the same time.</p></div>
+      <div class="card"><h3>Scheduler and limits</h3><p>Start downloads at night and stop them in the morning. Speed limits per download or for everything, changed live.</p></div>
+      <div class="card"><h3>Checksum check</h3><p>Paste the MD5, SHA-1, SHA-256 or SHA-512 the site lists. FastDL tells you if the file arrived damaged.</p></div>
+      <div class="card"><h3>Proxy support</h3><p>Uses your Windows proxy settings, or set your own (with a user name and password) in Options.</p></div>
+      <div class="card"><h3>Expired links</h3><p>A video link that expires is renewed from its page by itself. For other sites, download the file again and FastDL continues where it stopped.</p></div>
+      <div class="card"><h3>Stays out of the way</h3><p>Lives in the tray, starts with Windows, and updates itself.</p></div>
+    </div>
+    <p class="note" style="margin-top:22px">FastDL can't download DRM-protected streams (Netflix, Prime Video, Spotify, paid courses) and isn't meant to. Only download what you have the right to.</p>
+    <div class="shot">
+      <picture>
+        <source srcset="img/grabber-dark.png" media="(prefers-color-scheme: dark)">
+        <img src="img/grabber-light.png" alt="The site grabber listing the files on a web page" width="1280" height="720" loading="lazy">
+      </picture>
+    </div>
+  </section>
+</div>
+
+<div class="alt-bg" id="install">
+  <div class="wrap">
+    <section>
+      <h2>Install</h2>
+      <div class="two">
+        <div>
+          <h3>1. The app</h3>
+          <ol class="steps">
+            <li><a href="https://github.com/Usman-akram-2003/FastDL/releases/latest/download/FastDL-Setup.exe">Download FastDL-Setup.exe</a> and run it.</li>
+            <li>Keep <i>Install ffmpeg, aria2 and Deno</i> ticked: videos and torrents need them (installed with winget).</li>
+            <li>Windows may say <i>"Windows protected your PC"</i>, because FastDL isn't code-signed yet. Click <b>More info</b>, then <b>Run anyway</b>.</li>
+          </ol>
+        </div>
+        <div>
+          <h3>2. The browser button (Chrome, Edge, Brave)</h3>
+          <ol class="steps">
+            <li>Open <code>chrome://extensions</code> (or <code>edge://extensions</code>) and turn on <b>Developer mode</b>.</li>
+            <li>Click <b>Load unpacked</b> and choose <code>%LOCALAPPDATA%\Programs\FastDL\extension</code>.</li>
+            <li>Refresh your open tabs.</li>
+          </ol>
+          <h3>Firefox (beta)</h3>
+          <p>Download <a href="https://github.com/Usman-akram-2003/FastDL/releases/latest/download/FastDL-Firefox.zip">FastDL-Firefox.zip</a>, then in Firefox open <code>about:debugging</code> &rarr; <i>This Firefox</i> &rarr; <i>Load Temporary Add-on</i> and pick the zip. Firefox forgets temporary add-ons when it closes, until a signed version is published.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="wrap">
+  <section id="faq">
+    <h2>Questions</h2>
+    <details><summary>Is it really free?</summary><p>Yes. No ads, no account, no paid tier. The source is on GitHub.</p></details>
+    <details><summary>Does it send my downloads anywhere?</summary><p>No. FastDL runs on your PC only: its window talks to it at 127.0.0.1, and nothing goes anywhere except to the sites you download from (and to GitHub, to check for updates).</p></details>
+    <details><summary>Why does Windows warn me when I run the installer?</summary><p>Windows warns about every program from a publisher it doesn't know yet. FastDL isn't code-signed, because a signing certificate costs money. The warning isn't a finding about FastDL itself. If you prefer, read or build the source from GitHub.</p></details>
+    <details><summary>Can it download from Netflix, Spotify, or paid courses?</summary><p>No. Those streams are DRM-protected and FastDL doesn't bypass that. It works with ordinary files and with videos that can be played without DRM.</p></details>
+    <details><summary>Is a download faster with more connections?</summary><p>Only on servers that allow many connections, and only up to your own internet speed. FastDL starts a few and adds more gradually, and remembers how many each site accepts. Some servers ban clients that open too many, so it backs off by itself.</p></details>
+    <details><summary>How do I update it?</summary><p>It updates itself: when a new version is out, an <i>Update</i> button appears at the bottom of the window.</p></details>
+  </section>
+  <footer>
+    FastDL &middot; <a href="https://github.com/Usman-akram-2003/FastDL">Source code</a> &middot;
+    <a href="https://github.com/Usman-akram-2003/FastDL/releases">Releases</a> &middot;
+    <a href="https://github.com/Usman-akram-2003/FastDL/issues">Report a problem</a>
+  </footer>
+</div>
+</body>
+</html>

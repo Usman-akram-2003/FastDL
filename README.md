@@ -2,7 +2,7 @@
 
 <h1 align="center">FastDL</h1>
 <p align="center">A fast, free download manager for Windows: files, videos and torrents, with a browser button like IDM.</p>
-<p align="center"><a href="https://github.com/Usman-akram-2003/FastDL/releases/latest"><b>⬇ Download the latest version</b></a></p>
+<p align="center"><a href="https://github.com/Usman-akram-2003/FastDL/releases/latest"><b>⬇ Download the latest version</b></a> &nbsp;·&nbsp; <a href="https://usman-akram-2003.github.io/FastDL/">Website</a></p>
 
 ---
 
@@ -12,6 +12,9 @@
 - **Videos** from YouTube, Bilibili, Dailymotion, OK.ru and about 1,800 other sites: pick the quality, audio only or subtitles, or *Download all*.
 - **Torrents**: magnet links and `.torrent` files; choose which files you want before anything downloads.
 - **Browser button**: hover any video for *Download this video*; browser downloads go to FastDL with a *Download File Info* window first (folder, category, name). If FastDL is closed, the browser starts it.
+- **Site grabber**: give it a web page and it lists the files the page links to (pdf, zip, images, videos); filter by type, tick what you want.
+- **Checksum check**: paste the MD5 / SHA-1 / SHA-256 / SHA-512 a site lists; FastDL tells you if the finished file doesn't match.
+- **Proxy**: Windows' proxy settings by default, or your own in Options (`http://user:pass@host:port`, or `none`).
 - **Both internet connections at once**: Wi-Fi + Ethernet + phone tethering, for up to ~2× speed.
 - **Mirrors**: download one file from several servers at the same time.
 - **Scheduler**: start downloads at night, stop them in the morning.
@@ -33,6 +36,10 @@
 2. Click **Load unpacked** and choose `%LOCALAPPDATA%\Programs\FastDL\extension`.
 3. Refresh your open tabs.
 
+### Browser button (Firefox, beta)
+
+Download `FastDL-Firefox.zip` from [Releases](https://github.com/Usman-akram-2003/FastDL/releases/latest), then in Firefox open `about:debugging` → *This Firefox* → *Load Temporary Add-on* and pick the zip. Firefox forgets temporary add-ons when it closes; a permanent one needs Mozilla's signature (see `firefox.py`).
+
 ## Good to know
 
 - FastDL runs on your PC only: its window talks to it at `127.0.0.1`, nothing is sent anywhere else.
@@ -49,10 +56,11 @@ winget install Gyan.FFmpeg aria2.aria2 DenoLand.Deno
 python fastdl.py            # run it from source
 python test_fastdl.py       # tests (local servers; a few need the internet)
 python build.py             # dist\FastDL\ (app), dist\FastDL-Setup.exe, dist\latest.json
+python firefox.py           # dist\FastDL-Firefox.zip (the Firefox extension)
 ```
 
 **Releasing**: raise `APP_VERSION` in `fastdl.py`, run `python build.py`, then
-`gh release create vX.Y dist\FastDL-Setup.exe dist\latest.json --title "FastDL X.Y" --notes "..."`.
+`gh release create vX.Y dist\FastDL-Setup.exe dist\latest.json dist\FastDL-Firefox.zip --title "FastDL X.Y" --notes-file notes.md`.
 Installed copies find the update within a day.
 
 **Code signing**: set `FASTDL_SIGN_THUMBPRINT` (certificate in Windows) or `FASTDL_SIGN_PFX` + `FASTDL_SIGN_PASSWORD` before `build.py`: the app, the installer and the uninstaller get signed.
@@ -63,7 +71,9 @@ Installed copies find the update within a day.
 |---|---|
 | `fastdl.py` | the engine, the local server, the windows and the tray |
 | `ui.html` | the interface (list, progress windows, dialogs) |
-| `extension/` | the browser extension |
+| `extension/` | the browser extension (Chrome, Edge, Brave) |
+| `firefox.py` | packs the same extension for Firefox |
+| `docs/` | the website (GitHub Pages) |
 | `build.py`, `installer.iss` | building the app and the installer |
 | `update_deps.py` | keeps yt-dlp, ffmpeg, aria2 and Deno up to date |
 | `test_fastdl.py` | the tests |

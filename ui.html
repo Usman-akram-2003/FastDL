@@ -122,6 +122,11 @@
   .pwbox[hidden] { display: none; }
   .pwtabs { display: flex; gap: 2px; }
   .pwtabs button[hidden] { display: none; }
+  .flist.gbox { max-height: 250px; }
+  #grabType { height: 30px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--win); color: var(--fg); font: inherit; }
+  .gbox .frow { grid-template-columns: 18px minmax(0, 1fr) 70px; }
+  #pwSum { width: 100%; height: 26px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--win); color: var(--fg); font: inherit; font-size: 12px; }
+  #pwSumNote { font-size: 12px; }
   .filesbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .filesbar .btn { height: 30px; }
   .flist { max-height: 132px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
@@ -235,6 +240,7 @@
     <div class="sep"></div>
     <button class="tb" id="bDelete" title="Remove from list (Del)"><svg viewBox="0 0 24 24" style="stroke:var(--err)"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Delete</button>
     <button class="tb" id="bClear"><svg viewBox="0 0 24 24" style="stroke:var(--err)"><path d="M4 7h16M6 7l1 13h10l1-13M9 7V4h6v3M9 14l2 2 4-4"/></svg>Clear Done</button>
+    <button class="tb" id="bGrab" title="List the files a web page links to (pdf, zip, images ...) and download the ones you pick"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 14l3 3 5-6"/></svg>Grabber</button>
     <div class="sep"></div>
     <button class="tb" id="bOptions" title="Connections, folder, speed limit, browser"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>Options</button>
     <button class="tb" id="bSched" title="Set when scheduled downloads start and stop"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M5 3L2 6M19 3l3 3"/></svg>Scheduler</button>
@@ -318,6 +324,7 @@
         <dt>Transfer rate</dt><dd id="pwRate"></dd>
         <dt>Time left</dt><dd id="pwLeft"></dd>
         <dt>Resume capability</dt><dd id="pwResume"></dd>
+        <dt>Checksum</dt><dd><input id="pwSum" spellcheck="false" placeholder="paste the MD5 / SHA-256 the site shows" aria-label="Checksum"><span id="pwSumNote"></span></dd>
       </dl>
     </div>
     <div class="pwbox pwform" role="tabpanel" id="panLimit" aria-labelledby="tabLimit" hidden>
@@ -384,6 +391,8 @@
           <div class="row"><input id="oFolder" spellcheck="false"><button type="button" class="btn sq" id="oBrowse" aria-label="Choose folder">...</button></div></div>
         <label class="field"><span>Global speed limit for all downloads together, in KB/s (0 = no limit)</span>
           <input type="number" id="oLimit" min="0" step="50"></label>
+        <label class="field"><span>Proxy (empty = Windows' settings, none = no proxy, or http://host:port, http://user:pass@host:port)</span>
+          <input id="oProxy" spellcheck="false" autocomplete="off" placeholder="empty: use Windows' proxy settings"></label>
         <label class="chk"><input type="checkbox" id="oMulti"> Use all internet connections at once (Wi-Fi + Ethernet + phone tethering)</label>
         <label class="chk"><input type="checkbox" id="oAuto"> Start FastDL with Windows</label>
         <label class="chk"><input type="checkbox" id="oCloseDone"> Close a download's window 10 seconds after it finishes</label>
@@ -456,6 +465,32 @@
   </form>
 </dialog>
 
+<dialog id="grab" aria-labelledby="grabTitle">
+  <form method="dialog" id="grabForm">
+    <h2 id="grabTitle">Site grabber</h2>
+    <div class="dbody">
+      <div class="field"><label for="grabUrl">Web page: FastDL lists the files it links to</label>
+        <div class="row"><input id="grabUrl" autocomplete="off" placeholder="https://..."><button type="button" class="btn" id="grabFind">Find files</button></div></div>
+      <div class="derr" id="grabErr"></div>
+      <div id="grabResult" hidden>
+        <div class="filesbar">
+          <select id="grabType" aria-label="File type"></select>
+          <input id="grabFilter" placeholder="Name contains..." aria-label="Name contains" spellcheck="false" style="height:30px;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:var(--win);color:var(--fg)">
+          <button type="button" class="btn" id="grabAll">Select all shown</button>
+          <button type="button" class="btn" id="grabNone">Select none</button>
+          <span class="muted" id="grabSum"></span>
+        </div>
+        <div class="flist gbox" id="grabList" role="group" aria-label="Files on this page"></div>
+        <label class="field" style="margin-top:10px"><span>Save to (leave empty: each type goes in its own folder under Downloads)</span><input id="grabFolder" autocomplete="off"></label>
+      </div>
+    </div>
+    <div class="dfoot">
+      <button class="btn" value="cancel" formnovalidate>Close</button>
+      <button class="btn primary" value="go" id="grabGo" disabled>Download selected</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="dlg">
   <form method="dialog" id="addForm">
     <h2>Add download</h2>
@@ -486,6 +521,9 @@
       </div>
       <label class="field" id="mirrorField"><span>Mirrors (optional): other links to the same file, one per line. FastDL downloads from all of them at once.</span>
         <textarea id="addMirrors" rows="2" spellcheck="false" placeholder="https://mirror2.example.com/same-file.zip"></textarea>
+      </label>
+      <label class="field"><span>Checksum (optional): paste the MD5 / SHA-1 / SHA-256 / SHA-512 the site lists, FastDL checks the file when it's done</span>
+        <input id="addSum" autocomplete="off" spellcheck="false" placeholder="e.g. 9f86d081884c7d659a2feaa0c55ad015...">
       </label>
       <small class="muted" id="connHint" hidden>More than 8 helps only on servers that allow it. FastDL lowers it automatically if the server refuses.</small>
       <div class="derr" id="derr"></div>
@@ -611,6 +649,8 @@ function renderProgress() {
   $("pwLimNow").textContent = d.status === "downloading" ? `${size(d.speed)}/sec` : "-";
   $("pwLeft").textContent = left(d) || (done ? "Done" : "");
   $("pwResume").textContent = d.resumable == null ? "" : d.resumable ? "Yes" : "No (restarts from zero)";
+  $("pwSumNote").textContent = d.verified === true ? "Matches: the file is intact." : d.verified === false ? "DOES NOT MATCH" : d.checksum ? "Will be checked when done." : "";
+  $("pwSumNote").style.color = d.verified === true ? "var(--ok)" : d.verified === false ? "var(--err)" : "var(--muted)";
   $("pwFill").firstElementChild.style.width = p + "%";
   $("pwFill").classList.toggle("paused", d.status === "paused" || d.status === "error");
 
@@ -686,6 +726,7 @@ $("pw").querySelector(".pwtabs").addEventListener("keydown", e => {
 
 // fill the forms from the download once per opening, so the 1-second refresh never overwrites what you type
 function fillOptions(d) {
+  $("pwSum").value = d.checksum || "";
   $("pwLimOn").checked = d.limit > 0;
   if (d.limit) $("pwLim").value = Math.round(d.limit / 1024);
   $("pwLim").disabled = !(d.limit > 0);
@@ -694,6 +735,11 @@ function fillOptions(d) {
 }
 const setOptions = body => pwId && post(`/api/downloads/${pwId}/options`, body).then(refresh);
 const sendLimit = () => setOptions({ limit: $("pwLimOn").checked ? Math.max(1, +$("pwLim").value || 0) * 1024 : 0 });
+$("pwSum").onchange = async () => {
+  const r = await post(`/api/downloads/${pwId}/checksum`, { checksum: $("pwSum").value });
+  if (!r.ok) $("pwSumNote").textContent = (await r.json()).error;
+  refresh();
+};
 $("pwLimOn").onchange = () => { $("pwLim").disabled = !$("pwLimOn").checked; sendLimit(); };
 $("pwLim").onchange = sendLimit;
 $("pw").querySelectorAll('input[name="onDone"]').forEach(r => r.onchange = () => setOptions({ on_done: r.value }));
@@ -916,7 +962,7 @@ $("bOptions").onclick = async () => {
   $("oFolder").placeholder = o.default_folder; $("oLimit").value = Math.round(o.global_limit / 1024);
   $("oMulti").checked = o.multilink; $("oAuto").checked = o.autostart; $("oAsk").checked = o.ask_browser;
   $("oSkipMb").value = o.skip_smaller_mb; $("oSkipTypes").value = o.skip_types; $("optErr").textContent = "";
-  $("oCloseDone").checked = o.close_done;
+  $("oCloseDone").checked = o.close_done; $("oProxy").value = o.proxy;
   $("oUpdUrl").value = o.update_url; $("oVersion").textContent = `This is FastDL ${o.version}.`; $("oUpdMsg").textContent = "";
   $("opt").showModal();
 };
@@ -939,10 +985,58 @@ $("optForm").addEventListener("submit", async e => {
     conns: +$("oConns").value, max_active: +$("oActive").value, folder: $("oFolder").value.trim(),
     global_limit: Math.max(0, +$("oLimit").value || 0) * 1024, multilink: $("oMulti").checked, autostart: $("oAuto").checked,
     ask_browser: $("oAsk").checked, skip_smaller_mb: +$("oSkipMb").value || 0, skip_types: $("oSkipTypes").value,
-    close_done: $("oCloseDone").checked, update_url: $("oUpdUrl").value.trim() });
+    close_done: $("oCloseDone").checked, proxy: $("oProxy").value.trim(), update_url: $("oUpdUrl").value.trim() });
   if (!r.ok) { $("optErr").textContent = (await r.json()).error; return; }
   $("opt").close(); refresh();
 });
+// ---- site grabber ----
+let grabbed = [];
+const grabShown = () => { const t = $("grabType").value, q = $("grabFilter").value.trim().toLowerCase();
+  return grabbed.filter(l => (!t || l.cat === t) && (!q || l.name.toLowerCase().includes(q))); };
+const grabBoxes = () => [...$("grabList").querySelectorAll("input")];
+function grabSummary() { const n = grabBoxes().filter(b => b.checked).length;
+  $("grabSum").textContent = `${n} selected of ${grabBoxes().length} shown`; $("grabGo").disabled = !n; }
+function grabRender() {
+  const list = grabShown();
+  $("grabList").innerHTML = list.map(l => `<label class="frow"><input type="checkbox" data-u="${esc(l.url)}"><span title="${esc(l.url)}">${esc(l.name)}</span><span>${esc(l.ext.toUpperCase())}</span></label>`).join("")
+    || `<div class="empty" style="padding:20px">No files match.</div>`;
+  grabSummary();
+}
+$("bGrab").onclick = () => {
+  grabbed = []; $("grabResult").hidden = true; $("grabErr").textContent = ""; $("grabGo").disabled = true;
+  $("grabUrl").value = ""; $("grabFolder").value = "";
+  $("grab").showModal(); $("grabUrl").focus();
+};
+$("grabFind").onclick = async () => {
+  $("grabErr").textContent = "Reading the page..."; $("grabResult").hidden = true;
+  try {
+    const r = await post("/api/grab", { url: $("grabUrl").value.trim() }), j = await r.json();
+    if (!r.ok) { $("grabErr").textContent = j.error; return; }
+    grabbed = j.links;
+    if (!grabbed.length) { $("grabErr").textContent = "No downloadable files found on that page."; return; }
+    $("grabErr").textContent = "";
+    const cats = [...new Set(grabbed.map(l => l.cat))].sort();
+    $("grabType").innerHTML = `<option value="">All types (${grabbed.length})</option>` +
+      cats.map(c => `<option value="${esc(c)}">${esc(c)} (${grabbed.filter(l => l.cat === c).length})</option>`).join("");
+    $("grabFilter").value = ""; $("grabResult").hidden = false; grabRender();
+  } catch { $("grabErr").textContent = "FastDL is not running."; }
+};
+$("grabUrl").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("grabFind").click(); } });
+$("grabType").onchange = $("grabFilter").oninput = grabRender;
+$("grabList").addEventListener("change", grabSummary);
+$("grabAll").onclick = () => { grabBoxes().forEach(b => b.checked = true); grabSummary(); };
+$("grabNone").onclick = () => { grabBoxes().forEach(b => b.checked = false); grabSummary(); };
+$("grabForm").addEventListener("submit", async e => {
+  if (e.submitter?.value !== "go") return;
+  e.preventDefault();
+  const chosen = new Set(grabBoxes().filter(b => b.checked).map(b => b.dataset.u));
+  const folder = $("grabFolder").value.trim(), page = $("grabUrl").value.trim();
+  $("grabGo").disabled = true;
+  for (const l of grabbed.filter(l => chosen.has(l.url)))
+    await post("/api/downloads", { url: l.url, referer: page, kind: "file", folder, category: l.cat, filename: l.name, quiet: true });
+  $("grab").close(); cat = "All Downloads"; refresh();
+});
+
 $("bClear").onclick = () => run(() => Promise.all(items.filter(d => d.status === "done").map(d => act(d.id, "remove"))));
 $("bFolder").onclick = () => act(sel, "folder");
 
@@ -1057,7 +1151,7 @@ $("addForm").addEventListener("submit", async e => {
   if (how === "cancel") return;
   e.preventDefault();
   try {
-    const common = { folder: $("addFolder").value.trim(), later: how === "later", mirrors: $("addMirrors").value };
+    const common = { folder: $("addFolder").value.trim(), checksum: $("addSum").value.trim(), later: how === "later", mirrors: $("addMirrors").value };
     const r = await post("/api/downloads", torrentFile
       ? { ...common, torrent: torrentFile.b64, torrent_name: torrentFile.name }
       : { ...common, url: $("addUrl").value.trim(), conns: +$("addConns").value });

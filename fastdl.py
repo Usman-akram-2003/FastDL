@@ -3,7 +3,7 @@
 python fastdl.py               -> starts the app at http://127.0.0.1:9614
 python fastdl.py URL [folder]  -> download from the command line
 """
-import base64, functools, glob, http.client, ipaddress, json, os, re, secrets, shutil, socket, subprocess, sys, threading, time, types
+import base64, functools, glob, hashlib, html.parser, http.client, ipaddress, json, os, re, secrets, shutil, socket, subprocess, sys, threading, time, types
 import urllib.error, urllib.parse, urllib.request, uuid, webbrowser
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,7 +66,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.4"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.5"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -138,6 +138,30 @@ def lan(url):
         return ipaddress.ip_address(socket.getaddrinfo(host, None)[0][4][0].split("%")[0]).is_private
     except (OSError, ValueError, TypeError):
         return False
+
+
+_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+_proxy_env0 = {k: os.environ.get(k) for k in _PROXY_ENV}  # what Windows / the user had set before FastDL
+
+
+def proxy_ok(p):
+    """Options > Proxy: "" (Windows' proxy settings), "none", or http(s)://[user:pass@]host:port."""
+    return p in ("", "none") or bool(re.fullmatch(r"https?://([^\s/@]+@)?[^\s/@:]+:\d{1,5}/?", p))
+
+
+def set_proxy(p):
+    """Through the environment, which every part reads: our engine (urllib), yt-dlp, and aria2 when it starts.
+    "" = Windows' own proxy settings (what browsers use), "none" = always connect directly."""
+    for k, v in _proxy_env0.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    if p == "none":
+        os.environ["NO_PROXY"] = "*"
+    elif p:
+        os.environ.update(HTTP_PROXY=p, HTTPS_PROXY=p, NO_PROXY="localhost,127.0.0.1")
+    opener.cache_clear()  # openers made earlier keep the old proxy
 
 
 @functools.lru_cache(maxsize=None)
@@ -280,6 +304,8 @@ class Download:
     measure = True  # speed from byte counts; Video/Torrent get it from their engine
     selected, files = None, ()  # torrents only: chosen file numbers, file list (saved with every download)
     expired = False  # link stopped working (403/410): the same file from a fresh link continues this download
+    checksum = ""    # MD5 / SHA-1 / SHA-256 / SHA-512 the site lists for the file: checked once it's finished
+    verified = None  # True = matches, False = doesn't, None = not checked (yet)
 
     @property
     def page(self):
@@ -358,6 +384,7 @@ class Download:
         info["sources"] = dict(self.by_source) if len(self.by_source) > 1 else {}
         info["scheduled"], info["mirrors"], info["category"] = self.scheduled, len(self.mirrors), self.category
         info["files"], info["selected"] = list(getattr(self, "files", ())), getattr(self, "selected", None)  # torrents
+        info["checksum"], info["verified"] = self.checksum, self.verified
         return info
 
     def run(self):
@@ -781,6 +808,7 @@ class Video(Download):
                 os.remove(d.dest)
 
 
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # for programs on this PC (aria2)
 ARIA_PORT, ARIA_SECRET, aria_lock, aria_proc = 6801, secrets.token_hex(16), threading.Lock(), None
 
 
@@ -788,7 +816,7 @@ def aria2(method, *params):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "aria2." + method, "params": [f"token:{ARIA_SECRET}", *params]})
     req = urllib.request.Request(f"http://127.0.0.1:{ARIA_PORT}/jsonrpc", body.encode(), {"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with DIRECT.open(req, timeout=10) as r:
             return json.load(r)["result"]
     except urllib.error.HTTPError as e:
         raise IOError(json.load(e).get("error", {}).get("message", str(e)))
@@ -1050,6 +1078,51 @@ def browse(start):
     return os.path.normpath(r.stdout.strip()) if r.stdout.strip() else None
 
 
+class _LinkParser(html.parser.HTMLParser):
+    """Every link and media source in a page (a href, img src/srcset, video, audio, source, embed)."""
+    def __init__(self):
+        super().__init__()
+        self.links, self.base = [], None
+
+    def handle_starttag(self, tag, attrs):
+        for k, v in attrs:
+            if not v:
+                continue
+            if tag == "base" and k == "href":
+                self.base = v
+            elif k in ("href", "src", "data-src"):
+                self.links.append(v)
+            elif k == "srcset":
+                self.links += [part.split()[0] for part in v.split(",") if part.split()]
+
+
+PAGE_EXT = {"", "html", "htm", "shtml", "xhtml", "php", "asp", "aspx", "jsp", "cgi", "css", "js", "json", "xml", "rss"}
+IMAGE_EXT = ("jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "avif", "tif", "tiff")
+
+
+def grab_links(url, headers):
+    """Site grabber: the files a web page links to (pdf, zip, images, videos ...), for you to pick from.
+    ponytail: this one page as the server sends it; links a page only adds later with JavaScript aren't seen."""
+    with urllib.request.urlopen(urllib.request.Request(url, headers={**UA, **headers}), timeout=30) as r:
+        if r.headers.get_content_type() not in ("text/html", "application/xhtml+xml"):
+            raise ValueError("That link is a file, not a web page: add it with Add URL instead.")
+        base = r.geturl()
+        page = r.read(5_000_000).decode(r.headers.get_content_charset() or "utf-8", "replace")
+    p = _LinkParser()
+    p.feed(page)
+    base = urllib.parse.urljoin(base, p.base or "")
+    seen, out = set(), []
+    for link in p.links:
+        u = urllib.parse.urljoin(base, link.strip()).split("#")[0]
+        name = os.path.basename(urllib.parse.unquote(urllib.parse.urlparse(u).path))
+        ext = os.path.splitext(name)[1].lower().lstrip(".")
+        if not u.startswith(("http://", "https://")) or u in seen or ext in PAGE_EXT or len(ext) > 5:
+            continue
+        seen.add(u)
+        out.append({"url": u, "name": clean(name), "ext": ext, "cat": "Images" if ext in IMAGE_EXT else category_of(name)})
+    return out[:2000]
+
+
 STATE_FILE = os.path.join(HOME, "downloads.json")
 TORRENT_DIR = os.path.join(HOME, "torrents")  # copies of uploaded .torrent files
 
@@ -1066,7 +1139,7 @@ def save_torrent(data_b64, name):
         f.write(data)
     return path
 SAVED = ("id", "url", "folder", "given", "title", "dest", "name", "size", "done", "status", "error", "added", "conns", "format", "desc",
-         "limit", "on_done", "mirrors", "scheduled", "category", "selected", "expired", "post")
+         "limit", "on_done", "mirrors", "scheduled", "category", "selected", "expired", "post", "checksum", "verified")
 BUILTIN_CATS = ("Video", "Music", "Documents", "Compressed", "Programs", "Other")
 CAT_EXT = {
     "Video": ("mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "wmv", "3gp", "ts", "vtt", "srt", "ttml"),
@@ -1091,6 +1164,33 @@ def cat_folder(cat):
 def categories():
     return list(BUILTIN_CATS) + [c for c in settings().get("categories", []) if c not in BUILTIN_CATS]
 ON_DONE = ("nothing", "open", "folder", "sleep", "shutdown")
+HASHES = {32: "md5", 40: "sha1", 64: "sha256", 128: "sha512"}  # told apart by length
+
+
+def parse_checksum(text):
+    """The hash in whatever was pasted ("SHA256: AB12...", "ab12...  file.zip"); "" for nothing, None if no hash."""
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    found = [h for h in re.findall(r"[0-9a-fA-F]+", text) if len(h) in HASHES]
+    return found[0].lower() if found else None
+
+
+def verify(d):
+    """Compare the finished file with the checksum the site lists. A mismatch = damaged or not the same file."""
+    if not d.checksum or not d.dest or not os.path.isfile(d.dest):
+        return
+    d.verified, d.phase = None, f"Checking {HASHES[len(d.checksum)].upper()}..."
+    h = hashlib.new(HASHES[len(d.checksum)])
+    try:
+        with open(d.dest, "rb") as f:
+            while chunk := f.read(1 << 20):
+                h.update(chunk)
+    finally:
+        d.phase = ""
+    d.verified = h.hexdigest() == d.checksum
+    d.error = None if d.verified else ("Checksum does not match: the file is damaged or isn't the one the site lists. "
+                                       "Delete it (with the file) and download it again.")
 HHMM = re.compile(r"([01]\d|2[0-3]):[0-5]\d$")
 SCHEDULE_DEFAULT = {"enabled": False, "start": "02:00", "stop": "07:00", "days": list(range(7))}
 
@@ -1205,6 +1305,7 @@ class Manager:
     def _go(self, d):
         d.run()
         if d.status == "done":
+            verify(d)
             self.finished(d)
         self.kick()
         self.power_check()
@@ -1325,7 +1426,7 @@ M = Manager()
 
 OPTIONS_DEFAULT = {"conns": 8, "max_active": 3, "folder": "", "global_limit": 0, "multilink": True,
                    "ask_browser": True, "skip_smaller_mb": 0, "skip_types": "jpg jpeg png gif webp svg ico bmp",
-                   "close_done": True}
+                   "close_done": True, "proxy": ""}
 
 
 def options():
@@ -1340,6 +1441,7 @@ def apply_options():
     global CONNS, MAX_ACTIVE, DEFAULT_FOLDER, MULTILINK
     o = options()
     CONNS, MAX_ACTIVE, MULTILINK, GLOBAL.limit = o["conns"], o["max_active"], o["multilink"], o["global_limit"]
+    set_proxy(o["proxy"] if proxy_ok(o["proxy"]) else "")
     DEFAULT_FOLDER = o["folder"] or o["default_folder"]
     if aria_proc and aria_proc.poll() is None:  # torrents: aria2 keeps its own overall limit
         try:
@@ -1356,6 +1458,7 @@ UI_FILE = os.path.join(sys._MEIPASS if FROZEN else os.path.dirname(os.path.abspa
 NATIVE_HOST = "com.fastdl.launcher"
 EXTENSION_ID = "ncandpkokkmoafpomjemanhficndppjf"  # pinned by the "key" in extension/manifest.json
 BROWSERS = (r"Software\Google\Chrome", r"Software\Microsoft\Edge", r"Software\BraveSoftware\Brave-Browser")
+FIREFOX_ID = "fastdl@usman-akram-2003.github.io"  # the Firefox extension's id (build.py puts it in its manifest)
 
 
 def launch_cmd():
@@ -1443,9 +1546,13 @@ def register_launcher():
     with open(manifest, "w") as f:
         json.dump({"name": NATIVE_HOST, "description": "Starts FastDL", "path": bat, "type": "stdio",
                    "allowed_origins": [f"chrome-extension://{EXTENSION_ID}/"]}, f, indent=2)
-    for browser in BROWSERS:
+    firefox = os.path.join(HOME, "native-host-firefox.json")  # Firefox names extensions by id, not origin
+    with open(firefox, "w") as f:
+        json.dump({"name": NATIVE_HOST, "description": "Starts FastDL", "path": bat, "type": "stdio",
+                   "allowed_extensions": [FIREFOX_ID]}, f, indent=2)
+    for browser, path in [(b, manifest) for b in BROWSERS] + [(r"Software\Mozilla", firefox)]:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"{browser}\NativeMessagingHosts\{NATIVE_HOST}") as k:
-            winreg.SetValue(k, "", winreg.REG_SZ, manifest)
+            winreg.SetValue(k, "", winreg.REG_SZ, path)
 
 
 UPDATE = {}  # newer version found: {"version", "url", "sha256", "notes"}; "state" while installing
@@ -1785,6 +1892,10 @@ class API(BaseHTTPRequestHandler):
             if folder and not os.path.isabs(folder):
                 return self.send(400, {"error": "The download folder must be a full path, like C:\\Downloads"})
             new["folder"] = folder
+            proxy = str(body.get("proxy", o["proxy"]) or "").strip()
+            if not proxy_ok(proxy):
+                return self.send(400, {"error": "Proxy: leave it empty, type none, or give it like http://127.0.0.1:8080"})
+            new["proxy"] = proxy
             new["skip_types"] = " ".join(re.findall(r"[a-z0-9]{1,8}", str(body.get("skip_types", o["skip_types"])).lower()))
             for k in ("multilink", "ask_browser", "close_done"):
                 new[k] = bool(body.get(k, o[k]))
@@ -1858,6 +1969,22 @@ class API(BaseHTTPRequestHandler):
             if not later:
                 open_progress(d.id)
             return self.send(200, d.info())
+        if p == ["api", "grab"]:  # site grabber: list the files a page links to
+            url = str(body.get("url", "")).strip()
+            if not url.startswith(("http://", "https://")):
+                return self.send(400, {"error": "Type the address of a web page (https://...)"})
+            try:
+                return self.send(200, {"links": grab_links(url, {"Cookie": str(body["cookie"])} if body.get("cookie") else {})})
+            except Exception as e:
+                return self.send(400, {"error": friendly_error(e)})
+        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "checksum" and p[2] in M.items:
+            d, value = M.items[p[2]], parse_checksum(body.get("checksum"))
+            if value is None:
+                return self.send(400, {"error": "That isn't an MD5, SHA-1, SHA-256 or SHA-512 checksum"})
+            d.checksum, d.verified = value, None
+            if d.status == "done":
+                threading.Thread(target=verify, args=(d,), daemon=True).start()
+            return self.send(200, d.info())
         if p == ["api", "browse"]:
             return self.send(200, {"folder": browse(str(body.get("folder") or DEFAULT_FOLDER))})
         if p == ["api", "downloads"] and body.get("torrent"):  # .torrent file from the Add dialog
@@ -1893,6 +2020,9 @@ class API(BaseHTTPRequestHandler):
             raw = raw.split() if isinstance(raw, str) else raw  # the dialog's box: one link per line
             mirrors = [m.strip() for m in raw if isinstance(m, str) and m.strip().startswith(("http://", "https://"))][:10]
             cat = body.get("category") if body.get("category") in categories() else None
+            checksum = parse_checksum(body.get("checksum"))
+            if checksum is None:
+                return self.send(400, {"error": "Checksum: paste the MD5, SHA-1, SHA-256 or SHA-512 the site shows"})
             folder = str(body.get("folder") or "").strip() or (cat_folder(cat) if cat else DEFAULT_FOLDER)
             post, response = body.get("post"), None
             if post:  # form download: send the form now, while the browser's own download waits paused
@@ -1911,10 +2041,11 @@ class API(BaseHTTPRequestHandler):
                       body.get("title"), bool(body.get("later")), conns,
                       body.get("format") or None, str(body.get("desc") or ""), body.get("filename") or None, mirrors,
                       post, response)
-            d.category = cat
-            notify("Download started", body.get("filename") or d.name or urllib.parse.urlparse(url).hostname or url)
-            if not body.get("later") and not body.get("quiet"):  # quiet: "Download all" adds many at once
-                open_progress(d.id)  # its own window pops up, like IDM's (also while FastDL sits in the tray)
+            d.category, d.checksum = cat, checksum or d.checksum
+            if not body.get("quiet"):  # quiet: "Download all" / the site grabber add many at once: no pile of pop-ups
+                notify("Download started", body.get("filename") or d.name or urllib.parse.urlparse(url).hostname or url)
+                if not body.get("later"):
+                    open_progress(d.id)  # its own window pops up, like IDM's (also while FastDL sits in the tray)
             return self.send(200, d.info())
         if p == ["api", "power", "cancel"]:
             M.cancel_power()

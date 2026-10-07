@@ -1,3 +1,9 @@
+// Chrome, Edge, Brave: `chrome`. Firefox: `browser` (promises); its `chrome` works with callbacks only.
+const ext = globalThis.browser ?? chrome;
+const action = ext.action ?? ext.browserAction; // Firefox's extension is Manifest V2
+const mem = {}; // Firefox keeps this page alive and may lack storage.session
+const session = ext.storage.session ?? { get: async k => ({ [k]: mem[k] }), set: async o => void Object.assign(mem, o), remove: async k => void delete mem[k] };
+
 const API = "http://127.0.0.1:9614/api";
 const MANIFEST_URL = /\.(m3u8|mpd)(\?|$)/i;
 const MANIFEST_TYPE = /mpegurl|dash\+xml/i;
@@ -17,7 +23,7 @@ let starting = null;
 const alive = () => fetch(API + "/power").then(r => r.ok, () => false);
 function startFastDL() {
   starting ??= (async () => {
-    try { await chrome.runtime.sendNativeMessage("com.fastdl.launcher", {}); } catch {} // launcher exits at once: "error" is normal
+    try { await ext.runtime.sendNativeMessage("com.fastdl.launcher", {}); } catch {} // launcher exits at once: "error" is normal
     for (let i = 0; i < 50; i++) { // up to 25 s: FastDL.exe unpacks itself first
       if (await alive()) return true;
       await new Promise(r => setTimeout(r, 500));
@@ -38,7 +44,7 @@ async function api(path, body) {
 
 // Cookies + referer let FastDL download files that need you to be logged in.
 async function browserHeaders(url, referer) {
-  const cookie = url.startsWith("http") ? (await chrome.cookies.getAll({ url })).map(c => `${c.name}=${c.value}`).join("; ") : "";
+  const cookie = url.startsWith("http") ? (await ext.cookies.getAll({ url })).map(c => `${c.name}=${c.value}`).join("; ") : "";
   return { url, referer, cookie, ua: navigator.userAgent };
 }
 
@@ -48,13 +54,13 @@ async function send(url, referer, kind, extra = {}) {
 }
 
 function badge(ok) {
-  chrome.action.setBadgeText({ text: ok ? "OK" : "!" });
-  chrome.action.setBadgeBackgroundColor({ color: ok ? "#16a34a" : "#dc2626" });
-  setTimeout(() => chrome.action.setBadgeText({ text: "" }), 2500);
+  action.setBadgeText({ text: ok ? "OK" : "!" });
+  action.setBadgeBackgroundColor({ color: ok ? "#16a34a" : "#dc2626" });
+  setTimeout(() => action.setBadgeText({ text: "" }), 2500);
 }
 
 // ---- stream sniffing: remember video streams each tab loads (session storage survives worker sleep) ----
-chrome.webRequest.onHeadersReceived.addListener(d => {
+ext.webRequest.onHeadersReceived.addListener(d => {
   if (d.tabId < 0) return;
   const h = Object.fromEntries((d.responseHeaders || []).map(x => [x.name.toLowerCase(), x.value || ""]));
   const type = h["content-type"] || "";
@@ -67,22 +73,22 @@ chrome.webRequest.onHeadersReceived.addListener(d => {
 
 async function remember(tabId, s) {
   const key = "t" + tabId;
-  const list = (await chrome.storage.session.get(key))[key] || [];
+  const list = (await session.get(key))[key] || [];
   if (list.some(x => x.url === s.url)) return;
   list.push(s);
-  await chrome.storage.session.set({ [key]: list.slice(-20) });
-  chrome.action.setBadgeText({ tabId, text: String(Math.min(list.length, 20)) });
+  await session.set({ [key]: list.slice(-20) });
+  action.setBadgeText({ tabId, text: String(Math.min(list.length, 20)) });
 }
 
-chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.url) chrome.storage.session.remove("t" + tabId); // new page (or YouTube-style in-page navigation)
+ext.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.url) session.remove("t" + tabId); // new page (or YouTube-style in-page navigation)
 });
-chrome.tabs.onRemoved.addListener(tabId => chrome.storage.session.remove("t" + tabId));
+ext.tabs.onRemoved.addListener(tabId => session.remove("t" + tabId));
 
 // Streams this tab played, best first: manifests, then the playing file, then the biggest files.
 async function streamsOf(tab, src) {
   const key = "t" + tab.id;
-  const list = (await chrome.storage.session.get(key))[key] || [];
+  const list = (await session.get(key))[key] || [];
   const manifests = list.filter(s => s.manifest);
   const files = list.filter(s => !s.manifest && s.url !== src).sort((a, b) => b.size - a.size);
   const playing = /^https?:/.test(src || "") ? [{ url: src, manifest: MANIFEST_URL.test(src) }] : [];
@@ -122,7 +128,7 @@ const HANDLERS = {
   show: () => api("/show", {}),
 };
 
-chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+ext.runtime.onMessage.addListener((msg, sender, reply) => {
   const handle = HANDLERS[msg.type];
   if (!handle || !sender.tab) return;
   handle(msg, sender.tab).then(reply, () => reply(false)); // false = FastDL not running
@@ -142,7 +148,7 @@ async function browserOptions() {
 // ---- form downloads (POST), like IDM: remember what the browser sent with a click, so FastDL can send it too ----
 const posts = new Map(); // url -> { body (base64), type, t }
 const b64 = bytes => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
-chrome.webRequest.onBeforeRequest.addListener(d => {
+ext.webRequest.onBeforeRequest.addListener(d => {
   if (d.method !== "POST" || !d.requestBody) return;
   let entry = null;
   if (d.requestBody.formData) { // an ordinary form: send it back the same way
@@ -159,13 +165,13 @@ chrome.webRequest.onBeforeRequest.addListener(d => {
   posts.set(d.url, { ...entry, t: Date.now() });
   for (const [u, e] of posts) if (Date.now() - e.t > 120000 || posts.size > 50) posts.delete(u); // keep it small
 }, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "xmlhttprequest", "other"] }, ["requestBody"]);
-chrome.webRequest.onBeforeSendHeaders.addListener(d => {
+ext.webRequest.onBeforeSendHeaders.addListener(d => {
   const e = d.method === "POST" && posts.get(d.url);
   const ct = e && !e.form && d.requestHeaders?.find(h => h.name.toLowerCase() === "content-type");
   if (ct) e.type = ct.value;
 }, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "xmlhttprequest", "other"] }, ["requestHeaders"]);
 
-chrome.downloads.onCreated.addListener(async item => {
+ext.downloads.onCreated.addListener(async item => {
   const url = item.finalUrl || item.url;
   if (!/^https?:/.test(url) || item.state !== "in_progress") return;
   // Options > "Leave to the browser": these types / small files stay a normal browser download
@@ -175,7 +181,7 @@ chrome.downloads.onCreated.addListener(async item => {
   const size = item.fileSize > 0 ? item.fileSize : item.totalBytes;
   if (ext && o.skip_types.split(" ").includes(ext)) return;
   if (o.skip_smaller_mb > 0 && size > 0 && size < o.skip_smaller_mb * 1048576) return;
-  await chrome.downloads.pause(item.id).catch(() => {});
+  await ext.downloads.pause(item.id).catch(() => {});
   try {
     let taken;
     // a form answered with the file itself (a redirect would show up as a different, plain-link finalUrl)
@@ -193,24 +199,24 @@ chrome.downloads.onCreated.addListener(async item => {
       taken = await send(url, item.referrer, "file"); // Options: don't ask, download straight away
     }
     if (taken) {
-      await chrome.downloads.cancel(item.id);
-      await chrome.downloads.erase({ id: item.id });
+      await ext.downloads.cancel(item.id);
+      await ext.downloads.erase({ id: item.id });
       return;
     }
   } catch {}
-  chrome.downloads.resume(item.id).catch(() => {}); // FastDL not running: let the browser handle it
+  ext.downloads.resume(item.id).catch(() => {}); // FastDL not running: let the browser handle it
 });
 
 // Toolbar button: grab the video on the current page.
-chrome.action.onClicked.addListener(tab =>
+action.onClicked.addListener(tab =>
   grab(tab, tab.url).then(badge, () => badge(false)));
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({ id: "link", title: "Download with FastDL", contexts: ["link", "video", "audio", "image"] });
-  chrome.contextMenus.create({ id: "page", title: "Download video on this page with FastDL", contexts: ["page"] });
+ext.runtime.onInstalled.addListener(() => {
+  ext.contextMenus.create({ id: "link", title: "Download with FastDL", contexts: ["link", "video", "audio", "image"] });
+  ext.contextMenus.create({ id: "page", title: "Download video on this page with FastDL", contexts: ["page"] });
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
+ext.contextMenus.onClicked.addListener((info, tab) => {
   const done = p => p.then(badge, () => badge(false));
   if (info.mediaType === "video" || info.menuItemId === "page") return done(grab(tab, info.frameUrl || info.pageUrl, info.srcUrl));
   done(send(info.linkUrl || info.srcUrl, tab?.url));

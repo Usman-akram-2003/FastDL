@@ -2,6 +2,7 @@
 (() => {
   if (window.__fastdl) return;
   window.__fastdl = true;
+  const ext = globalThis.browser ?? chrome; // Firefox: `browser` returns promises
 
   const CATS = ["Video", "Music", "Documents", "Compressed", "Programs", "Other"];
   const host = document.createElement("div");
@@ -68,7 +69,7 @@
   </style>
   <div class="ui">
     <div class="bar">
-      <button class="main"><img class="logo" src="${chrome.runtime.getURL("icons/32.png")}" alt="">
+      <button class="main"><img class="logo" src="${ext.runtime.getURL("icons/32.png")}" alt="">
         <span class="label">Download this video</span></button>
       <button class="small help" title="Open FastDL">?</button>
       <button class="small close" title="Hide for this video">&#x2715;</button>
@@ -106,7 +107,7 @@
   const size = n => { const u = ["B", "KB", "MB", "GB"]; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return n.toFixed(i ? 2 : 0) + " " + u[i]; };
   const safe = s => (s || "video").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim().slice(0, 150) || "video";
   const split = p => { const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/")); return [p.slice(0, i), p.slice(i + 1)]; };
-  const send = msg => chrome.runtime.sendMessage(msg).catch(() => false); // false: FastDL off or extension reloaded
+  const send = msg => ext.runtime.sendMessage(msg).catch(() => false); // false: FastDL off or extension reloaded
 
   function place() {
     if (!video || !video.isConnected) { if (!menuOpen && !dlgOpen) bar.style.display = "none"; return; }
