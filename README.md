@@ -16,6 +16,7 @@
 - **Mirrors**: download one file from several servers at the same time.
 - **Scheduler**: start downloads at night, stop them in the morning.
 - **Speed limits** per download and for everything together, live.
+- **Form downloads (file hosts)**: when a site's download button sends a form, FastDL sends the same form, like IDM; if the site allows only one try, the browser simply keeps its download.
 - **Expired links**: a video link that expires is renewed from its page automatically; for any other site, open the page and download again: FastDL recognises the file and continues where it stopped.
 - **Self-tuning**: remembers how many connections each site accepts.
 - **Tray app**: starts with Windows, keeps downloading in the background, and updates itself from this page.

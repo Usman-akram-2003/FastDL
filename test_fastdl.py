@@ -37,6 +37,26 @@ class H(BaseHTTPRequestHandler):
         else:
             self.serve()
 
+    def do_POST(self):
+        """Form downloads: the right form gets the file (directly, or a redirect to it); a page, or 403 otherwise."""
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if body != b"id=42&ok=1":
+            self.send_response(403); self.end_headers(); return
+        if self.path == "/form/redirect":
+            self.send_response(303); self.send_header("Location", "/file-from-form.bin"); self.end_headers(); return
+        if self.path == "/form/page":
+            page = b"<html>Please wait...</html>"
+            self.send_response(200); self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(page))); self.end_headers(); self.wfile.write(page); return
+        self.send_response(200)  # /form/direct: the file itself, named by the server
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", 'attachment; filename="game.zip"')
+        self.send_header("Content-Length", str(len(DATA))); self.end_headers()
+        try:
+            self.wfile.write(DATA)
+        except OSError:
+            pass
+
     def serve(self):
         rng = self.headers.get("Range")
         data = DATA[:100_000] if self.path.startswith("/other") else DATA  # mirror with a different file
@@ -363,6 +383,38 @@ with tempfile.TemporaryDirectory() as d:
     while exp.status != "done":
         time.sleep(0.1)
     assert read(exp.dest) == DATA and kept > 0, "continued with the fresh link, byte-exact"
+
+# form downloads (POST), like IDM: the same form the browser sent gets the file
+import json as _json
+form ={"body": base64.b64encode(b"id=42&ok=1").decode(), "type": "application/x-www-form-urlencoded"}
+with tempfile.TemporaryDirectory() as d:
+    direct = Download(f"{base}/form/direct", d); direct.post = form; direct.run()
+    assert direct.status == "done" and read(direct.dest) == DATA and direct.name == "game.zip", (direct.error, direct.name)
+    redir = Download(f"{base}/form/redirect", d); redir.post = form; redir.run()
+    assert redir.status == "done" and read(redir.dest) == DATA, redir.error
+    assert redir.post is None and redir.url.endswith("/file-from-form.bin") and redir.ranged, "redirect: fast path from there"
+    wrong = Download(f"{base}/form/direct", d); wrong.post = {**form, "body": base64.b64encode(b"id=1").decode()}; wrong.run()
+    assert wrong.status == "error" and "(403)" in wrong.error, wrong.error
+    # through FastDL's API, as the extension sends it: a page answer is declined so the browser keeps its download
+    real_port = fastdl.PORT
+    api = fastdl.Server(("127.0.0.1", 0), fastdl.API); fastdl.PORT = api.server_port
+    threading.Thread(target=api.serve_forever, daemon=True).start()
+    def via_api(path):
+        req = urllib.request.Request(f"http://127.0.0.1:{fastdl.PORT}/api/downloads", headers={"X-FastDL": "1", "Content-Type": "application/json"},
+                                     data=_json.dumps({"url": f"{base}{path}", "kind": "file", "folder": d, "post": form, "quiet": True}).encode())
+        try:
+            return 200, _json.load(urllib.request.urlopen(req, timeout=30))
+        except urllib.error.HTTPError as e:
+            return e.code, _json.load(e)
+    assert via_api("/form/page")[0] == 400, "a web page must be left to the browser"
+    code, info = via_api("/form/direct")
+    assert code == 200, info
+    took = fastdl.M.items[info["id"]]
+    for _ in range(100):
+        if took.status == "done": break
+        time.sleep(0.1)
+    assert took.status == "done" and read(took.dest) == DATA, took.error
+    api.shutdown(); fastdl.PORT = real_port
 
 # self-update: only newer versions, only https, a proper SHA-256; a tampered download is refused
 import io, json as _json

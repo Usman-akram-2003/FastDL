@@ -66,7 +66,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.2"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.3"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -371,7 +371,7 @@ class Download:
                 if attempt == 0 and link_expired(e) and not self.stop.is_set() and self._refresh_link():
                     continue  # fresh link for the same file: carry on where it stopped
                 self.status, self.error = "error", friendly_error(e)
-                if link_expired(e) and type(self) is Download:
+                if link_expired(e) and type(self) is Download and not self.post:  # a refused form isn't an old link
                     self.expired = True
                     self.error = ("The link expired. Open its page in your browser and download it again: "
                                   "FastDL recognises the file and continues where it stopped.")
@@ -381,7 +381,7 @@ class Download:
     def _refresh_link(self):
         """Link expired: ask the page (yt-dlp knows ~1800 video sites, e.g. OK.ru) for a fresh link to the
         *same* file, recognised by its size. Videos (Video class) already re-read their page by themselves."""
-        if type(self) is not Download or not self.page or not self.size or not is_video_site(self.page):
+        if type(self) is not Download or self.post or not self.page or not self.size or not is_video_site(self.page):
             return False
         self.phase = "Link expired: getting a fresh one from the page..."
         try:
@@ -402,10 +402,16 @@ class Download:
             self.phase = ""
         return False
 
-    def _run(self):
-        self.phase = "Connecting..."
-        url, name, self.size, ranged = probe(self.url, self.headers)
-        self.ranged, self.phase = ranged, ""
+    post = None       # form download: {"body": base64, "type": content type} the browser sent with the click
+    _response = None  # the server's answer to that form, already open (FastDL sent it while the browser waited)
+
+    def _open_post(self):
+        req = urllib.request.Request(self.url, data=base64.b64decode(self.post["body"]), method="POST",
+                                     headers={**self.headers, "Content-Type": self.post.get("type") or
+                                              "application/x-www-form-urlencoded"})
+        return urllib.request.urlopen(req, timeout=30)
+
+    def _set_dest(self, name):
         if self.title and clean(self.title):  # Save As name, or a sniffed stream named after its page
             t = clean(self.title)
             # keep its own extension (subtitles.en.vtt, setup.exe); else take the server's ("index" -> "page.mp4")
@@ -414,6 +420,28 @@ class Download:
             os.makedirs(self.folder, exist_ok=True)
             self.dest = pick_dest(self.folder, name, self.url)
             self.name = os.path.basename(self.dest)
+
+    def _run(self):
+        self.phase = "Connecting..."
+        if self.post:  # a form download (POST), like IDM: send the same form the browser sent
+            r, self._response = self._response or self._open_post(), None
+            if r.geturl() != self.url:  # the form led to the real file's address: an ordinary link from here on
+                r.close()
+                self.url, self.post = r.geturl(), None
+            else:  # the server answered the form with the file itself: one connection, from the start
+                m = Message()
+                m["content-disposition"] = r.headers.get("Content-Disposition", "")
+                name = clean(m.get_filename() or os.path.basename(urllib.parse.urlparse(self.url).path)) or "download"
+                self.size, self.ranged, self.phase = int(r.headers.get("Content-Length") or 0) or None, False, ""
+                self._set_dest(name)
+                part = self.dest + ".fdpart"
+                self._single(self.url, part, r)
+                if not self.stop.is_set():
+                    os.replace(part, self.dest)
+                return
+        url, name, self.size, ranged = probe(self.url, self.headers)
+        self.ranged, self.phase = ranged, ""
+        self._set_dest(name)
         part, meta = self.dest + ".fdpart", self.dest + ".fdl"
         if ranged:
             sources = [url]
@@ -436,13 +464,14 @@ class Download:
             if os.path.exists(meta):
                 os.remove(meta)
 
-    def _single(self, url, part):
-        # server has no range support: one connection, restarts from zero on resume
+    def _single(self, url, part, response=None):
+        # server has no range support (or answered a form with the file): one connection, restarts from zero
         self.done = 0
         self.active = 1
         row = {"n": 1, "got": 0, "info": "Connecting...", "via": None}
         self.workers = [row]
-        with urllib.request.urlopen(urllib.request.Request(url, headers=self.headers), timeout=30) as r, open(part, "wb") as f:
+        opened = response or urllib.request.urlopen(urllib.request.Request(url, headers=self.headers), timeout=30)
+        with opened as r, open(part, "wb") as f:
             row["info"] = "Receiving data..."
             while chunk := r.read(self._read_size()):
                 if self.stop.is_set():
@@ -1037,7 +1066,7 @@ def save_torrent(data_b64, name):
         f.write(data)
     return path
 SAVED = ("id", "url", "folder", "given", "title", "dest", "name", "size", "done", "status", "error", "added", "conns", "format", "desc",
-         "limit", "on_done", "mirrors", "scheduled", "category", "selected", "expired")
+         "limit", "on_done", "mirrors", "scheduled", "category", "selected", "expired", "post")
 BUILTIN_CATS = ("Video", "Music", "Documents", "Compressed", "Programs", "Other")
 CAT_EXT = {
     "Video": ("mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "wmv", "3gp", "ts", "vtt", "srt", "ttml"),
@@ -1144,9 +1173,10 @@ class Manager:
         self.kick()
 
     def add(self, url, folder, headers, kind=None, streams=(), title=None, later=False, conns=None,
-            format=None, desc="", filename=None, mirrors=()):
+            format=None, desc="", filename=None, mirrors=(), post=None, response=None):
         d = make(url, folder, headers, kind, streams, title)
         d.conns, d.format, d.desc = conns or CONNS, format, desc
+        d.post, d._response = post, response  # form download: set before it can start
         d.mirrors = [m for m in mirrors if m != d.url] if type(d) is Download else []  # mirrors: plain files only
         if filename:  # "Save As" from the dialog wins over the site's title
             # a video's extension comes from the streams yt-dlp joins; a plain file keeps the name as typed
@@ -1462,8 +1492,18 @@ def install_update():
     folder = os.path.join(HOME, "updates")
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"FastDL-Setup-{UPDATE['version']}.exe")
-    with urllib.request.urlopen(urllib.request.Request(UPDATE["url"], headers=UA), timeout=60) as r, open(path, "wb") as f:
-        shutil.copyfileobj(r, f)
+    # FastDL's own engine: several connections (a plain single download took 107 s for 37 MB)
+    dl = Download(UPDATE["url"], folder)
+    dl.dest = path
+    t = threading.Thread(target=dl.run, daemon=True)
+    t.start()
+    while t.is_alive():
+        if dl.size:
+            UPDATE["state"] = f"Downloading the update... {100 * dl.done // dl.size}%"
+        t.join(0.5)
+    if dl.status != "done":
+        UPDATE["state"] = f"Couldn't download the update: {dl.error}"
+        return
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
@@ -1854,9 +1894,23 @@ class API(BaseHTTPRequestHandler):
             mirrors = [m.strip() for m in raw if isinstance(m, str) and m.strip().startswith(("http://", "https://"))][:10]
             cat = body.get("category") if body.get("category") in categories() else None
             folder = str(body.get("folder") or "").strip() or (cat_folder(cat) if cat else DEFAULT_FOLDER)
+            post, response = body.get("post"), None
+            if post:  # form download: send the form now, while the browser's own download waits paused
+                try:
+                    post = {"body": base64.b64encode(base64.b64decode(str(post.get("body", "")), validate=True)).decode(),
+                            "type": str(post.get("type") or "application/x-www-form-urlencoded")[:200]}
+                    probe_dl = Download(url, folder, headers)
+                    probe_dl.post = post
+                    response = probe_dl._open_post()
+                except Exception as e:  # e.g. a one-time form: the browser keeps its download
+                    return self.send(400, {"error": friendly_error(e)})
+                if response.geturl() == url and response.headers.get_content_type() == "text/html":
+                    response.close()  # the server answered with a page, not the file: leave it to the browser
+                    return self.send(400, {"error": "The site answered with a web page, not the file"})
             d = M.add(url, folder, headers, body.get("kind"), streams,
                       body.get("title"), bool(body.get("later")), conns,
-                      body.get("format") or None, str(body.get("desc") or ""), body.get("filename") or None, mirrors)
+                      body.get("format") or None, str(body.get("desc") or ""), body.get("filename") or None, mirrors,
+                      post, response)
             d.category = cat
             notify("Download started", body.get("filename") or d.name or urllib.parse.urlparse(url).hostname or url)
             if not body.get("later") and not body.get("quiet"):  # quiet: "Download all" adds many at once

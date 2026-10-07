@@ -139,6 +139,32 @@ async function browserOptions() {
   return opts || { ask_browser: true, skip_smaller_mb: 0, skip_types: "jpg jpeg png gif webp svg ico bmp" };
 }
 
+// ---- form downloads (POST), like IDM: remember what the browser sent with a click, so FastDL can send it too ----
+const posts = new Map(); // url -> { body (base64), type, t }
+const b64 = bytes => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
+chrome.webRequest.onBeforeRequest.addListener(d => {
+  if (d.method !== "POST" || !d.requestBody) return;
+  let entry = null;
+  if (d.requestBody.formData) { // an ordinary form: send it back the same way
+    const p = new URLSearchParams();
+    for (const [k, vs] of Object.entries(d.requestBody.formData)) for (const v of vs) p.append(k, v);
+    entry = { body: b64(new TextEncoder().encode(p.toString())), type: "application/x-www-form-urlencoded", form: true };
+  } else if (d.requestBody.raw?.length) { // raw bytes (JSON etc.): content type comes in onBeforeSendHeaders
+    const parts = d.requestBody.raw.filter(r => r.bytes).map(r => new Uint8Array(r.bytes));
+    const all = new Uint8Array(parts.reduce((n, a) => n + a.length, 0));
+    parts.reduce((off, a) => (all.set(a, off), off + a.length), 0);
+    entry = { body: b64(all), type: "application/octet-stream" };
+  }
+  if (!entry || entry.body.length > 1_000_000) return;
+  posts.set(d.url, { ...entry, t: Date.now() });
+  for (const [u, e] of posts) if (Date.now() - e.t > 120000 || posts.size > 50) posts.delete(u); // keep it small
+}, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "xmlhttprequest", "other"] }, ["requestBody"]);
+chrome.webRequest.onBeforeSendHeaders.addListener(d => {
+  const e = d.method === "POST" && posts.get(d.url);
+  const ct = e && !e.form && d.requestHeaders?.find(h => h.name.toLowerCase() === "content-type");
+  if (ct) e.type = ct.value;
+}, { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "xmlhttprequest", "other"] }, ["requestHeaders"]);
+
 chrome.downloads.onCreated.addListener(async item => {
   const url = item.finalUrl || item.url;
   if (!/^https?:/.test(url) || item.state !== "in_progress") return;
@@ -152,7 +178,13 @@ chrome.downloads.onCreated.addListener(async item => {
   await chrome.downloads.pause(item.id).catch(() => {});
   try {
     let taken;
-    if (item.mime === "application/x-bittorrent") {
+    // a form answered with the file itself (a redirect would show up as a different, plain-link finalUrl)
+    const post = posts.get(url);
+    if (post) {
+      posts.delete(url);
+      // FastDL sends the same form at once; if the site refuses a second one, the browser keeps its download
+      taken = await send(url, item.referrer, "file", { post: { body: post.body, type: post.type } });
+    } else if (item.mime === "application/x-bittorrent") {
       taken = await send(url, item.referrer, "torrent"); // torrents go straight in
     } else if (o.ask_browser) { // like IDM: the Download File Info window asks first, then handles Start / Later / Cancel
       const r = await api("/dialog", { ...(await browserHeaders(url, item.referrer)), kind: "file" });
