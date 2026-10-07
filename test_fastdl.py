@@ -11,6 +11,7 @@ DATA = os.urandom(3_000_017)
 
 
 busy, busy_lock = [0], threading.Lock()
+allowed = {"token": "old"}  # /exp/<token>/...: links work only while their token is the current one
 
 
 class H(BaseHTTPRequestHandler):
@@ -29,6 +30,9 @@ class H(BaseHTTPRequestHandler):
                     busy[0] -= 1
         elif self.path.startswith("/missing"):  # dead mirror
             self.send_response(404)
+            self.end_headers()
+        elif self.path.startswith("/exp/") and self.path.split("/")[2] != allowed["token"]:
+            self.send_response(403)  # an expired signed link
             self.end_headers()
         else:
             self.serve()
@@ -52,6 +56,10 @@ class H(BaseHTTPRequestHandler):
                 self.wfile.write(body[i:i + 16384])
                 if self.path.startswith(("/slow", "/limited")):
                     time.sleep(0.2 if self.path.startswith("/slow") else 0.01)
+                if self.path.startswith("/exp/"):
+                    if self.path.split("/")[2] != allowed["token"]:
+                        break  # the link expired mid-download: the server drops the connection
+                    time.sleep(0.05)
         except OSError:
             pass  # client hung up (pause, or piece got split)
 
@@ -334,6 +342,26 @@ except urllib.error.URLError as e:
     if "CERTIFICATE" in str(e).upper():
         raise
     print("(skipped the certificate check: badssl.com not reachable)", e)
+
+# expired link (IDM's "refresh address"): the download fails 403 halfway; the same file from a fresh link
+# continues it, keeping what was already downloaded, and the result is byte-exact
+with tempfile.TemporaryDirectory() as d:
+    allowed["token"] = "old"
+    m = fastdl.Manager()
+    exp = m.add(f"{base}/exp/old/file.bin", d, {"Referer": "https://example.com/page"})
+    while exp.done < 400_000:
+        time.sleep(0.05)
+    allowed["token"] = "new"  # the old link stops working
+    while exp.status == "downloading":
+        time.sleep(0.1)
+    assert exp.status == "error" and exp.expired and "expired" in exp.error, (exp.status, exp.error)
+    kept = exp.done
+    assert m.match_expired(f"{base}/exp/new/other-name.zip", {}) is None, "different type must not match"
+    same = m.match_expired(f"{base}/exp/new/file.bin", {})
+    assert same is exp and exp.url.endswith("/exp/new/file.bin")
+    while exp.status != "done":
+        time.sleep(0.1)
+    assert read(exp.dest) == DATA and kept > 0, "continued with the fresh link, byte-exact"
 
 # self-update: only newer versions, only https, a proper SHA-256; a tampered download is refused
 import io, json as _json

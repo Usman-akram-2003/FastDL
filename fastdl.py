@@ -66,7 +66,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.1"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.2"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -186,6 +186,15 @@ HTTP_ERRORS = {
 }
 
 
+def link_expired(e):
+    """403/410: what signed, time-limited download links answer once they run out."""
+    code = getattr(e, "code", None)
+    if not isinstance(code, int):
+        m = re.search(r"HTTP Error (\d{3})", str(e))
+        code = int(m.group(1)) if m else None
+    return code in (403, 410)
+
+
 def friendly_error(e):
     """Plain words instead of '<urlopen error [WinError 10060] A connection attempt failed because ...'."""
     reason = getattr(e, "reason", e)
@@ -267,6 +276,12 @@ def free_name(path):
 class Download:
     measure = True  # speed from byte counts; Video/Torrent get it from their engine
     selected, files = None, ()  # torrents only: chosen file numbers, file list (saved with every download)
+    expired = False  # link stopped working (403/410): the same file from a fresh link continues this download
+
+    @property
+    def page(self):
+        """The web page the download came from (the browser sends it as Referer)."""
+        return self.given.get("Referer")
 
     def __init__(self, url, folder=None, headers=None, conns=None, title=None):
         self.id = uuid.uuid4().hex[:8]
@@ -343,13 +358,46 @@ class Download:
         return info
 
     def run(self):
-        self.status, self.error, self.errors = "downloading", None, []
+        self.status, self.error, self.errors, self.expired = "downloading", None, [], False
+        for attempt in range(2):
+            try:
+                self._run()
+                self.status = "paused" if self.stop.is_set() else "done"
+                break
+            except Exception as e:
+                if attempt == 0 and link_expired(e) and not self.stop.is_set() and self._refresh_link():
+                    continue  # fresh link for the same file: carry on where it stopped
+                self.status, self.error = "error", friendly_error(e)
+                if link_expired(e) and type(self) is Download:
+                    self.expired = True
+                    self.error = ("The link expired. Open its page in your browser and download it again: "
+                                  "FastDL recognises the file and continues where it stopped.")
+                break
+        self.phase, self.active = "", 0
+
+    def _refresh_link(self):
+        """Link expired: ask the page (yt-dlp knows ~1800 video sites, e.g. OK.ru) for a fresh link to the
+        *same* file, recognised by its size. Videos (Video class) already re-read their page by themselves."""
+        if type(self) is not Download or not self.page or not self.size or not is_video_site(self.page):
+            return False
+        self.phase = "Link expired: getting a fresh one from the page..."
         try:
-            self._run()
-            self.status = "paused" if self.stop.is_set() else "done"
+            import yt_dlp
+            with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "http_headers": self.given}) as ydl:
+                info = ydl.extract_info(self.page, download=False)
+            for f in sorted(info.get("formats") or [info], key=lambda f: -(f.get("height") or 0)):
+                if f.get("protocol") not in ("http", "https") or not f.get("url"):
+                    continue
+                headers = {**self.given, **(f.get("http_headers") or {})}
+                size = f.get("filesize") or probe(f["url"], {**UA, **headers})[2]
+                if size == self.size:
+                    self.url, self.given, self.headers = f["url"], headers, {**UA, **headers}
+                    return True
         except Exception as e:
-            self.status, self.error = "error", friendly_error(e)
-        self.active = 0
+            print("refresh link:", e)
+        finally:
+            self.phase = ""
+        return False
 
     def _run(self):
         self.phase = "Connecting..."
@@ -986,7 +1034,7 @@ def save_torrent(data_b64, name):
         f.write(data)
     return path
 SAVED = ("id", "url", "folder", "given", "title", "dest", "name", "size", "done", "status", "error", "added", "conns", "format", "desc",
-         "limit", "on_done", "mirrors", "scheduled", "category", "selected")
+         "limit", "on_done", "mirrors", "scheduled", "category", "selected", "expired")
 BUILTIN_CATS = ("Video", "Music", "Documents", "Compressed", "Programs", "Other")
 CAT_EXT = {
     "Video": ("mp4", "mkv", "webm", "avi", "mov", "flv", "m4v", "wmv", "3gp", "ts", "vtt", "srt", "ttml"),
@@ -1161,6 +1209,25 @@ class Manager:
             d.on_done = on_done
         if scheduled is not None:
             d.scheduled = scheduled
+
+    def match_expired(self, url, headers):
+        """IDM's "refresh download address": a download whose link expired, and the browser now hands over
+        the same file again (same size and type) with a fresh link: continue that one instead of starting over."""
+        waiting = [d for d in list(self.items.values()) if d.expired and type(d) is Download and d.status != "done"]
+        if not waiting:
+            return None
+        try:
+            _, name, size, _ = probe(url, {**UA, **headers})
+        except Exception:
+            return None
+        ext = os.path.splitext(name)[1].lower()
+        for d in waiting:
+            if size and d.size == size and os.path.splitext(d.name or "")[1].lower() == ext:
+                d.url, d.given = url, {**d.given, **headers}
+                d.headers, d.expired, d.error = {**UA, **d.given}, False, None
+                self.resume(d)
+                return d
+        return None
 
     def run_schedule(self, start):
         """Scheduler fired (or Start now / Stop now): start, or pause, every scheduled download."""
@@ -1768,6 +1835,11 @@ class API(BaseHTTPRequestHandler):
                        if isinstance(s, dict) and str(s.get("url", "")).startswith(("http://", "https://"))]
             if p[1] == "formats":
                 return self.send(200, formats(url, headers, streams, body.get("title")))
+            if body.get("kind") in (None, "file") and url.startswith("http"):
+                old = M.match_expired(url, headers)  # the same file again, from a fresh link: continue it
+                if old:
+                    open_progress(old.id)
+                    return self.send(200, {**old.info(), "window": "resumed", "resumed": True})
             if p[1] == "dialog":  # quality picked / browser download caught: ask the user first, like IDM
                 return self.send(200, {"window": open_dialog(dialog_spec(body, headers, streams))})
             try:
