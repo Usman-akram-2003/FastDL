@@ -325,6 +325,7 @@ assert "(403)" in fastdl.friendly_error(urllib.error.HTTPError("http://x", 403, 
 assert "(503)" in fastdl.friendly_error(urllib.error.HTTPError("http://x", 503, "Unavailable", {}, None))
 assert fastdl.friendly_error(IOError("ERROR: [youtube] Video unavailable")) == "[youtube] Video unavailable"
 assert "(403)" in fastdl.friendly_error(IOError("ERROR: [udemy:course] course: Unable to download webpage: HTTP Error 403: Forbidden"))
+assert "own download button" in fastdl.friendly_error(IOError("ERROR: Unsupported URL: https://host.example/processing-your-download-please-wait/"))
 with tempfile.TemporaryDirectory() as d:  # end to end: a dead link shows the plain message
     dead = Download("http://127.0.0.1:9/never.bin", d)  # port 9: nothing listens
     dead.run()

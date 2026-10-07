@@ -216,6 +216,9 @@ def friendly_error(e):
         return "Site not found. Check the link and your internet connection."
     if isinstance(reason, ConnectionResetError) or "10054" in text:
         return "The connection was cut by the server or the network. Press Start to continue."
+    if "Unsupported URL" in text:  # yt-dlp got a web page with no video it knows: often a file host's wait page
+        return ("This is a web page, not a file or a video. If the site has its own download button "
+                "(often after a countdown), click it: FastDL catches the real download.")
     return text.replace("ERROR: ", "")  # yt-dlp messages are already readable
 
 
