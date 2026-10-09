@@ -1,0 +1,9 @@
+<!-- Scoop install test on a clean Windows: double-click. Report: sandbox-results\scoop-report.txt -->
+<Configuration>
+  <Networking>Default</Networking>
+  <MappedFolders>
+    <MappedFolder><HostFolder>C:\project\fastdl\sandbox</HostFolder><SandboxFolder>C:\fastdl-test</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>C:\project\fastdl\sandbox-results</HostFolder><SandboxFolder>C:\fastdl-results</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
+  </MappedFolders>
+  <LogonCommand><Command>powershell -NoProfile -ExecutionPolicy Bypass -File C:\fastdl-test\scoop.ps1</Command></LogonCommand>
+</Configuration>

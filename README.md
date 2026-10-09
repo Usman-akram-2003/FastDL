@@ -31,6 +31,8 @@
 2. Keep *Install ffmpeg, aria2 and Deno* ticked (about 150 MB): they're needed for videos and torrents. FastDL uses winget if you have it, otherwise downloads them from their official release pages and checks their checksums.
 3. Windows may say *"Windows protected your PC"* because FastDL isn't code-signed yet: click **More info → Run anyway**.
 
+Prefer a command line? With [Scoop](https://scoop.sh): `scoop bucket add fastdl https://github.com/Usman-akram-2003/FastDL`, then `scoop install fastdl` (no Windows warning, because Scoop downloads the installer itself).
+
 ### Browser button (Chrome, Edge, Brave)
 
 1. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
@@ -56,13 +58,14 @@ pip install -r requirements.txt
 winget install Gyan.FFmpeg aria2.aria2 DenoLand.Deno
 python fastdl.py            # run it from source
 python test_fastdl.py       # tests (local servers; a few need the internet)
-# clean-PC install test: turn on Windows Sandbox, run build.py, double-click sandboxresh-pc.wsb, read sandbox-resultseport.txt
+# clean-PC install test: turn on Windows Sandbox, run build.py, double-click sandboxresh-pc.wsb, read sandbox-results
+eport.txt
 python build.py             # dist\FastDL\ (app), dist\FastDL-Setup.exe, dist\latest.json
 python firefox.py           # dist\FastDL-Firefox.zip (the Firefox extension)
 ```
 
 **Releasing**: raise `APP_VERSION` in `fastdl.py`, run `python build.py`, then
-`gh release create vX.Y dist\FastDL-Setup.exe dist\latest.json dist\FastDL-Firefox.zip --title "FastDL X.Y" --notes-file notes.md`.
+`gh release create vX.Y dist\FastDL-Setup.exe dist\latest.json dist\FastDL-Firefox.zip --title "FastDL X.Y" --notes-file notes.md`, then `python packaging.py` and commit `bucket/` (Scoop follows it by itself via `checkver`).
 Installed copies find the update within a day.
 
 **Code signing**: set `FASTDL_SIGN_THUMBPRINT` (certificate in Windows) or `FASTDL_SIGN_PFX` + `FASTDL_SIGN_PASSWORD` before `build.py`: the app, the installer and the uninstaller get signed.
@@ -76,6 +79,7 @@ Installed copies find the update within a day.
 | `extension/` | the browser extension (Chrome, Edge, Brave) |
 | `firefox.py` | packs the same extension for Firefox |
 | `docs/` | the website (GitHub Pages) |
+| `packaging.py`, `bucket/`, `packaging/` | winget and Scoop manifests, made from `dist/latest.json` after each release |
 | `build.py`, `installer.iss` | building the app and the installer |
 | `update_deps.py` | keeps yt-dlp, ffmpeg, aria2 and Deno up to date |
 | `test_fastdl.py` | the tests |
