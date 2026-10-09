@@ -75,7 +75,7 @@ Installed copies find the update within a day.
 FastDL's installer is **not code-signed yet**, so Windows may show "Windows protected your PC" (click *More info → Run anyway*, or install with winget or Scoop). The release build is prepared for free code signing from [SignPath.io](https://signpath.io) (certificate by SignPath Foundation) and will sign the installer automatically once SignPath approves the project; this section will then name the team and the signing steps. How a release is built: [`.github/workflows/release.yml`](.github/workflows/release.yml), from the code in this repository.
 
 - **Team:** one maintainer, [Usman-akram-2003](https://github.com/Usman-akram-2003), who writes, reviews and approves releases.
-- **Privacy:** FastDL runs on your PC only. It talks to the sites you download from, and to GitHub to look for updates (which, like any web request, shows GitHub your IP address). Nothing else is sent anywhere.
+- **Privacy:** FastDL runs on your PC only. It talks to the sites you download from, and to GitHub to look for updates and, for torrents, to fetch a public tracker list (which, like any web request, shows GitHub your IP address). Torrents connect to trackers and to the other people sharing the file. Nothing else is sent anywhere.
 - **Changes FastDL makes to your system:** it starts with Windows (turn off in Options), registers a small launcher so the browser extension can start it, installs Microsoft's WebView2 runtime if your PC lacks it, and downloads ffmpeg, aria2 and Deno into `%USERPROFILE%\.fastdl\tools`. The uninstaller removes the program and its registry entries.
 
 ## License

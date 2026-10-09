@@ -739,4 +739,115 @@ with tempfile.TemporaryDirectory() as h:
     fastdl.UPDATE.clear()
     fastdl.HOME = real_home
 
+# ---- speed: finding the server, keeping the connections, the last percent, torrents ----
+import socket as _s
+real_gai = _s.getaddrinfo
+
+
+def two_addresses(host, port, *a, **k):  # "two.test": one address nobody answers on, then a live one
+    if host in ("two.test", "dead.test"):
+        dead = [(_s.AF_INET, _s.SOCK_STREAM, 6, "", ("10.255.255.1", port))]
+        return dead + ([(_s.AF_INET, _s.SOCK_STREAM, 6, "", ("127.0.0.1", port))] if host == "two.test"
+                       else [(_s.AF_INET, _s.SOCK_STREAM, 6, "", ("10.255.255.2", port))])
+    return real_gai(host, port, *a, **k)
+
+
+_s.getaddrinfo = two_addresses
+try:
+    t0 = time.time()
+    c = fastdl.fast_connect(("two.test", esrv.server_port), 20)
+    assert c.getpeername()[0] == "127.0.0.1" and time.time() - t0 < 2.5, "a dead first address must not hold up the live one"
+    c.close()
+    t0 = time.time()
+    try:
+        fastdl.fast_connect(("dead.test", esrv.server_port), 2)
+        raise AssertionError("nothing is reachable")
+    except OSError:
+        assert time.time() - t0 < 5, "tried together, so about one timeout, not one per address"
+    c = fastdl.fast_connect(("127.0.0.1", esrv.server_port), 5)  # a plain single address still works
+    c.close()
+finally:
+    _s.getaddrinfo = real_gai
+
+# probe: one retry for a hiccup (5xx), none for an answer that won't change (404)
+hits = {"flaky": 0, "gone": 0}
+
+
+class F(BaseHTTPRequestHandler):
+    def do_GET(self):
+        key = "flaky" if self.path == "/flaky" else "gone"
+        hits[key] += 1
+        code = 404 if key == "gone" else 503 if hits[key] == 1 else 200
+        self.send_response(code)
+        self.send_header("Content-Length", "5" if code == 200 else "0")
+        self.end_headers()
+        if code == 200:
+            self.wfile.write(b"hello")
+
+    def log_message(self, *a):
+        pass
+
+
+fsrv = ThreadingHTTPServer(("127.0.0.1", 0), F)
+threading.Thread(target=fsrv.serve_forever, daemon=True).start()
+fb = f"http://127.0.0.1:{fsrv.server_port}"
+assert fastdl.probe(f"{fb}/flaky", {})[2] == 5 and hits["flaky"] == 2, hits
+try:
+    fastdl.probe(f"{fb}/gone", {})
+    raise AssertionError("404 must be raised")
+except urllib.error.HTTPError as e:
+    assert e.code == 404 and hits["gone"] == 1, hits
+
+# a refusal sets the cap to what the server is really giving (the connections receiving data), not to half
+pb = Download("http://x/y")
+pb.conns = pb.max_conns = 8
+pb.workers = [{"info": "Receiving data..."}] * 3 + [{"info": "Retrying in 2 sec..."}] * 4
+pb.active = 7
+assert pb._push_back() is True and pb.conns == 3, pb.conns
+pb.workers = [{"info": "Receiving data..."}]
+pb._push_back()
+assert pb.conns == 3, "one reaction per 3 s"
+pb2 = Download("http://x/y")
+pb2.conns = 8
+pb2.workers, pb2.active = [{"info": "Connecting..."}] * 4, 4
+pb2._push_back()
+assert pb2.conns == 4, "nobody receiving yet: halve"
+
+# ... and then it climbs back: +1, +2, +4 while probes aren't refused
+cl = Download("http://x/z")
+cl.max_conns, cl.conns, cl._throttled, cl._grew = 8, 1, 100.0, 0
+seq = []
+for now in (101, 103, 105.5, 108, 110.5, 113):
+    cl._climb(now, 0)
+    seq.append(cl.conns)
+assert seq == [1, 1, 2, 4, 8, 8], seq
+cl.conns, cl._throttled, cl._step = 3, 113.0, 1  # a refusal: wait the longer interval before the next probe
+cl._climb(114, 0)
+assert cl.conns == 3
+assert cl._stable is None or cl._stable <= 8
+
+# what is remembered for a site: where it held, including a level reached by climbing
+fastdl.settings(host_conns={"site.test": 3})
+fastdl.learn_conns("site.test", 3, 5)
+assert fastdl.settings()["host_conns"]["site.test"] == 5, fastdl.settings()
+fastdl.learn_conns("site.test", 5, 2)
+assert fastdl.settings()["host_conns"]["site.test"] == 2
+fastdl.learn_conns("site.test", 2, 2)
+assert fastdl.settings()["host_conns"]["site.test"] == 4, "a smooth download doubles it"
+fastdl.settings(host_conns={})
+
+# torrents: public trackers for magnets (a cached list, else the built-in one); never for a private .torrent
+with tempfile.TemporaryDirectory() as tdir:
+    real_tf = fastdl.TRACKERS_FILE
+    fastdl.TRACKERS_FILE = os.path.join(tdir, "t.txt")
+    assert fastdl.trackers() == list(fastdl.DEFAULT_TRACKERS)
+    open(fastdl.TRACKERS_FILE, "w").write("\n".join(f"udp://t{i}.example:80/announce" for i in range(8)) + "\n\nnot a tracker\n")
+    got = fastdl.trackers()
+    assert len(got) == 8 and got[0] == "udp://t0.example:80/announce", got
+    fastdl.TRACKERS_FILE = real_tf
+    pub, prv = os.path.join(tdir, "a.torrent"), os.path.join(tdir, "b.torrent")
+    open(pub, "wb").write(b"d4:infod6:lengthi1e4:name1:aee")
+    open(prv, "wb").write(b"d4:infod6:lengthi1e4:name1:a7:privatei1eee")
+    assert not fastdl.is_private(pub) and fastdl.is_private(prv) and fastdl.is_private(os.path.join(tdir, "missing"))
+
 print("all good")

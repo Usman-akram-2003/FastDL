@@ -45,6 +45,7 @@
     <li>It downloads the files, videos and torrents you ask for, from the sites and peers you point it at. Those sites see your internet address, as with any download.</li>
     <li>It keeps its download list and settings in a folder on your PC (<code>.fastdl</code> in your user folder). This can include the cookies needed to resume a signed-in download. It never leaves your PC.</li>
     <li>It checks GitHub once a day for a new version of itself. That request shows GitHub your internet address, like any web request, and nothing else.</li>
+    <li>When you download a torrent, it fetches a public list of torrent trackers from GitHub (at most once a week) to find other downloaders faster. Torrents themselves, as always with BitTorrent, connect to trackers and to other people sharing the file, who can see your internet address.</li>
     <li>If you use the Options proxy, requests go through the proxy you chose.</li>
   </ul>
 

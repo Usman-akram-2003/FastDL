@@ -3,7 +3,7 @@
 python fastdl.py               -> starts the app at http://127.0.0.1:9614
 python fastdl.py URL [folder]  -> download from the command line
 """
-import base64, datetime, functools, glob, hashlib, html.parser, http.client, ipaddress, json, os, re, secrets, shutil, socket, subprocess, sys, threading, time, types
+import base64, datetime, functools, glob, hashlib, html.parser, http.client, ipaddress, json, os, queue, re, secrets, shutil, socket, subprocess, sys, threading, time, types
 import urllib.error, urllib.parse, urllib.request, uuid, webbrowser
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,16 +70,82 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.9"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.10"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
 MULTILINK = True      # spread connections over every internet link (Wi-Fi + Ethernet + phone tethering)
 MAX_ACTIVE = 3        # files downloading at the same time
-MIN_SPLIT = 1 << 20   # never split a piece below 1 MB
+MIN_SPLIT = 1 << 20   # the first split never makes pieces below 1 MB
+TAIL_SPLIT = 1 << 18  # the last pieces may be split down to 256 KB: no one slow connection holds up the final percent
 CHUNK = 1 << 16       # 64 KB reads: finer progress and speed readings, still cheap
 DEFAULT_FOLDER = os.path.join(os.path.expanduser("~"), "Downloads")
 UA = {"User-Agent": "Mozilla/5.0 FastDL"}
+
+_real_create_connection = socket.create_connection
+
+
+def fast_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **kw):
+    """socket.create_connection that doesn't sit for minutes on a dead address. A site usually has several (IPv6 and
+    IPv4, or a few servers) and the standard function tries them one after another, each for the whole timeout: one dead
+    IPv6 address and a download "looks for the server" for a minute or more. Here the next address starts after 0.25 s
+    (at once when one fails) and the first to connect wins ("Happy Eyeballs", RFC 8305)."""
+    host, port = address
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return _real_create_connection(address, timeout, source_address, **kw)  # the same error as ever
+    if source_address:  # bound to one internet link: only addresses of its family can work
+        v6 = ":" in source_address[0]
+        infos = [i for i in infos if (i[0] == socket.AF_INET6) == v6]
+    if len(infos) <= 1:
+        return _real_create_connection(address, timeout, source_address, **kw)
+    families = {}
+    for i in infos:
+        families.setdefault(i[0], []).append(i)
+    lists, order = list(families.values()), []
+    while any(lists):  # alternate IPv6 / IPv4, the first family the system offers going first
+        order += [group.pop(0) for group in lists if group]
+    default = timeout is socket._GLOBAL_DEFAULT_TIMEOUT or timeout is None
+    per_try = 10 if default else min(timeout, 10)
+    results, done = queue.Queue(), threading.Event()
+
+    def attempt(info):
+        fam, typ, proto, _, addr = info
+        s = socket.socket(fam, typ, proto)
+        try:
+            s.settimeout(per_try)
+            if source_address:
+                s.bind(source_address)
+            s.connect(addr)
+            if done.is_set():  # lost the race
+                s.close()
+            else:
+                results.put(s)
+        except OSError as e:
+            s.close()
+            results.put(e)
+
+    started, pending, last, error = 0, 0, 0.0, None
+    while True:
+        if started < len(order) and (pending == 0 or time.time() - last >= 0.25):
+            threading.Thread(target=attempt, args=(order[started],), daemon=True).start()
+            started, pending, last = started + 1, pending + 1, time.time()
+        try:
+            got = results.get(timeout=0.05)
+        except queue.Empty:
+            continue
+        pending -= 1
+        if isinstance(got, socket.socket):
+            done.set()
+            got.settimeout(socket.getdefaulttimeout() if default else timeout)
+            return got
+        error = got
+        if started == len(order) and pending == 0:
+            raise error
+
+
+socket.create_connection = fast_connect  # http.client (so urllib), and everything else in this process
 
 
 RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -94,15 +160,30 @@ def clean(name):
 
 
 def probe(url, headers):
-    """Return (final_url, filename, size or None, supports_ranges)."""
+    """Return (final_url, filename, size or None, supports_ranges). One retry for what is usually a hiccup (a dropped
+    connection, a 5xx). Not for a timeout: a server that doesn't answer in 15 s won't in another 15, and the user
+    deserves the error now."""
+    for attempt in (0, 1):
+        try:
+            return _probe(url, headers)
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt:
+                raise
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            if attempt or isinstance(getattr(e, "reason", e), (TimeoutError, socket.timeout)):
+                raise
+        time.sleep(1)
+
+
+def _probe(url, headers):
     req = urllib.request.Request(url, headers={**headers, "Range": "bytes=0-0"})
     try:
-        r = urllib.request.urlopen(req, timeout=30)
+        r = urllib.request.urlopen(req, timeout=15)
     except urllib.error.HTTPError as e:
         if e.code != 416:
             raise
         # "range not satisfiable" for byte 0: the file is empty. Ask plainly: 0 bytes, nothing to split.
-        r = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30)
+        r = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=15)
     with r:
         final = r.geturl()
         m = Message()
@@ -303,7 +384,7 @@ def learn_conns(site, started, ended):
     if ended < started:
         tuned[site] = ended
     elif site in tuned:
-        up = tuned[site] * 2
+        up = ended if ended > started else tuned[site] * 2  # it climbed on its own this time: keep what worked
         if up >= CONNS:
             del tuned[site]
         else:
@@ -364,6 +445,9 @@ class Download:
         self._samples = []  # (time, bytes done) over the last 3 s, for the transfer rate
         self.added = time.time()
         self._throttled = 0
+        self.max_conns = None   # what was asked for; self.conns is what the server currently allows (it can climb back)
+        self._grew, self._probe_every, self._step = 0, 3, 1  # when conns last went up; wait after a refused probe; step size
+        self._stable = None     # the level that held for 10 s without a refusal: what is worth remembering for this site
         self.range_cap = None  # max bytes per request (YouTube throttles huge ranges)
         self.multilink = True  # False for links locked to one IP (YouTube stream URLs)
         self.by_link = {}      # bytes received per local IP, to show how the links shared the work
@@ -516,13 +600,14 @@ class Download:
                 sources += self._check_mirrors()
                 self.phase = ""
             site = site_of(url)
+            self.max_conns = self.conns
             learned = tuned_conns(site)
-            if learned:  # this site pushed back before: start where it was happy
+            if learned:  # this site pushed back before: start where it was happy (and probe upward from there)
                 self.conns = min(self.conns, learned)
             started = self.conns
             self._multi(sources, part, meta)
             if not self.stop.is_set():
-                learn_conns(site, started, self.conns)
+                learn_conns(site, started, self._stable or self.conns)
         else:
             self._single(url, part)
         if not self.stop.is_set():
@@ -601,13 +686,17 @@ class Download:
 
         self.done = size - self._left()
         self._samples = []  # resumed bytes arrived "instantly": counting them showed 1554 MB/s after a restart
-        saved, allowed, grown = 0, 2, time.time()
+        saved, allowed, grown = 0, 4, time.time()
+        began = grown
+        tail = min(MIN_SPLIT, TAIL_SPLIT)
         while True:
             for k in [k for k, t in owned.items() if not t.is_alive()]:
                 del owned[k]
-            # slow start: one more connection every 0.5 s; _push_back halves the cap when the server refuses
-            if allowed < self.conns and time.time() - grown > 0.5:
-                allowed, grown = allowed + 1, time.time()
+            now = time.time()
+            self._climb(now, began)
+            # slow start: four at once (a browser opens six), then one more every 0.25 s
+            if allowed < self.conns and now - grown > 0.25:
+                allowed, grown = allowed + 1, now
             allowed = min(allowed, self.conns)
             while len(owned) < allowed and not self.stop.is_set() and not self.errors:
                 with self.lock:
@@ -617,7 +706,7 @@ class Download:
                     else:  # dynamic segmentation: steal half of the biggest piece left
                         big = max(self.segs, key=lambda s: s[1] - s[0])
                         left = big[1] - big[0] + 1
-                        if left < 2 * MIN_SPLIT:
+                        if left < 2 * tail:  # the last pieces are split small too: one slow connection can't hold up the end
                             break
                         seg = [big[0] + left // 2, big[1]]
                         big[1] = seg[0] - 1
@@ -631,13 +720,27 @@ class Download:
                 saved = time.time()
             if not owned:
                 break
-            time.sleep(0.25)
+            time.sleep(0.1)
         if self.stop.is_set():
             return
         if self.errors:
             raise self.errors[0]
         if self.done != size:
             raise IOError(f"incomplete: {self.done} of {size} bytes")
+
+    def _climb(self, now, began):
+        """_push_back lowers the cap to what the server accepts when it refuses; this brings it back up, because a refusal
+        is often temporary (a rate limit, other downloads on the server) and a cap stuck low made the rest of a big download
+        crawl. One step at a time; while the probes aren't refused it speeds up (+1, +2, +4 ...), after a refused probe it
+        waits longer each time."""
+        cap = self.max_conns or self.conns
+        if self.conns < cap:
+            worked = self._grew > self._throttled  # the last probe up was not refused (yet): carry on quickly
+            if now - max(self._throttled, self._grew) > (2 if worked else self._probe_every):
+                self.conns, self._grew = min(cap, self.conns + self._step), now
+                self._step = min(self._step * 2, 4)
+        if now - max(self._throttled, began) > 10:
+            self._stable = self.conns  # held for 10 s without a refusal: this level is what the server really gives
 
     def _left(self):
         return sum(max(0, e - p + 1) for p, e in self.segs)
@@ -650,12 +753,17 @@ class Download:
         os.replace(meta + ".tmp", meta)  # atomic, a crash never leaves half a resume file
 
     def _push_back(self):
-        """A connection got nothing: the server may limit connections, so halve the cap (at most every 3 s).
+        """A connection got nothing: the server may limit connections (at most one reaction every 3 s). The cap becomes
+        what the server really gives us: the connections that are receiving data right now (halving blindly cut a 3-connection
+        server down to 2, and never came back up). Nobody receiving yet: halve.
         True = too many are open, this worker should hand its piece back and quit."""
         with self.lock:
             if self.conns > 1 and time.time() - self._throttled > 3:
-                self.conns = max(1, self.conns // 2)
-                self._throttled = time.time()
+                receiving = sum(1 for w in self.workers if str(w.get("info", "")).startswith("Receiving"))
+                self.conns = max(1, min(self.conns - 1, receiving) if receiving else self.conns // 2)
+                if time.time() - self._grew < 4:  # that was the probe up being refused (not the first ramp): probe less often
+                    self._probe_every = min(self._probe_every * 2, 30)
+                self._throttled, self._step = time.time(), 1
             return self.active > self.conns
 
     def _worker(self, sources, part, seg, pool=(None,), k=0, row=None):
@@ -775,7 +883,8 @@ class Video(Download):
             # watch?v=X&list=Y means "this video" (IDM does the same); without it a YouTube Mix (list=RD...)
             # is an endless playlist and the download sat at 0 B. Pure playlist links still download all.
             "noplaylist": True,
-            "concurrent_fragment_downloads": 8,
+            "concurrent_fragment_downloads": 16,  # HLS/DASH pieces at once (the last ones were crawling in, 8 at a time)
+            "socket_timeout": 15, "retries": 5, "fragment_retries": 10,  # a stalled piece is retried in 15 s, not 20 x 3
             "ratelimit": self.limit or None,  # HLS/playlist path only; ponytail: fixed at start, the fast path follows changes live
             "http_headers": self.given,
             "progress_hooks": [progress],
@@ -1011,11 +1120,62 @@ def install_tools():
                 print("install", name, "failed:", e)
 
 
+TRACKERS_FILE = os.path.join(HOME, "trackers.txt")
+TRACKERS_URL = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
+DEFAULT_TRACKERS = (  # used until the list below has been fetched (and when GitHub can't be reached)
+    "udp://tracker.opentrackr.org:1337/announce", "udp://open.stealth.si:80/announce", "udp://tracker.torrent.eu.org:451/announce",
+    "udp://exodus.desync.com:6969/announce", "udp://open.demonii.com:1337/announce", "udp://explodie.org:6969/announce",
+    "udp://tracker.openbittorrent.com:6969/announce", "udp://tracker.tiny-vps.com:6969/announce", "udp://tracker.dler.org:6969/announce")
+
+
+def trackers():
+    """Public trackers to add to a magnet link: with only DHT, finding the first peers (and so the torrent's file list)
+    can take minutes; trackers answer in seconds."""
+    try:
+        with open(TRACKERS_FILE, encoding="utf-8") as f:
+            found = [t.strip() for t in f if t.strip().startswith(("udp://", "http://", "https://"))]
+        if len(found) >= 5:
+            return found[:25]
+    except OSError:
+        pass
+    return list(DEFAULT_TRACKERS)
+
+
+def refresh_trackers():
+    """The public tracker list, from GitHub, at most once a week (background; the built-in list covers until then)."""
+    try:
+        if time.time() - os.path.getmtime(TRACKERS_FILE) < 7 * 86400:
+            return
+    except OSError:
+        pass
+    try:
+        with urllib.request.urlopen(urllib.request.Request(TRACKERS_URL, headers=UA), timeout=15) as r:
+            text = r.read(200_000).decode("utf-8", "replace")
+        if sum(1 for t in text.split() if t.startswith(("udp://", "http://", "https://"))) >= 5:
+            os.makedirs(HOME, exist_ok=True)
+            with open(TRACKERS_FILE + ".tmp", "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(TRACKERS_FILE + ".tmp", TRACKERS_FILE)
+    except Exception as e:
+        print("tracker list:", e)
+
+
+def is_private(torrent_path):
+    """A private torrent (its tracker's members only) must not be announced to public trackers."""
+    try:
+        with open(torrent_path, "rb") as f:
+            return b"7:privatei1e" in f.read(5_000_000)
+    except OSError:
+        return True  # can't tell: stay on the safe side
+
+
 def start_aria2():
     global aria_proc
     with aria_lock:
         if aria_proc and aria_proc.poll() is None:
             return
+        threading.Thread(target=refresh_trackers, daemon=True).start()
+        os.makedirs(HOME, exist_ok=True)
         exe = find_tool("aria2c")
         if not exe:  # a PC without winget (or whose installer step was skipped): get it now, it's 2.5 MB
             try:
@@ -1026,7 +1186,18 @@ def start_aria2():
         aria_proc = subprocess.Popen(
             [exe, "--enable-rpc", f"--rpc-listen-port={ARIA_PORT}", f"--rpc-secret={ARIA_SECRET}",
              "--seed-time=0", "--continue=true", f"--stop-with-process={os.getpid()}", "--quiet",
-             f"--max-overall-download-limit={GLOBAL.limit}"],  # Options > global speed limit
+             f"--max-overall-download-limit={GLOBAL.limit}",  # Options > global speed limit
+             # aria2's default allocates the whole file before the first byte (minutes for a big torrent: "stuck at 0%"):
+             # NTFS makes sparse files at once
+             "--file-allocation=none", "--disk-cache=64M",
+             # finding peers: DHT needs an entry point on a first run (aria2 has none: magnets sat waiting for minutes), and
+             # remembering its routing table makes the next start quick. More peers, tried more eagerly; dead trackers
+             # given up on after 10-15 s instead of 60.
+             "--enable-dht=true", "--enable-dht6=true", "--bt-enable-lpd=true",
+             "--dht-entry-point=dht.transmissionbt.com:6881", "--dht-entry-point6=dht.transmissionbt.com:6881",
+             f"--dht-file-path={os.path.join(HOME, 'dht.dat')}", f"--dht-file-path6={os.path.join(HOME, 'dht6.dat')}",
+             "--bt-max-peers=150", "--bt-request-peer-speed-limit=10M",
+             "--bt-tracker-connect-timeout=10", "--bt-tracker-timeout=15"],
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         for _ in range(50):
             try:
@@ -1103,6 +1274,8 @@ class Torrent(Download):
             opts = {"dir": self.folder, "pause-metadata": "true", "bt-remove-unselected-file": "true"}
             if self.selected:
                 opts["select-file"] = ",".join(map(str, self.selected))
+            if not os.path.isfile(self.url) or not is_private(self.url):  # magnet, or a public .torrent: add public trackers
+                opts["bt-tracker"] = ",".join(trackers())
             if os.path.isfile(self.url):  # a .torrent file picked from disk (saved under TORRENT_DIR)
                 with open(self.url, "rb") as f:
                     self.gid = aria2("addTorrent", base64.b64encode(f.read()).decode(), [], {**opts, "pause": "true"})
