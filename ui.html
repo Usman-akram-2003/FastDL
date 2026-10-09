@@ -673,6 +673,8 @@ function renderProgress() {
   $("pwLeft").textContent = left(d) || (done ? "Done" : "");
   $("pwResume").textContent = d.resumable == null ? "" : d.resumable ? "Yes" : "No (restarts from zero)";
   $("pwSumNote").textContent = d.verified === true ? "Matches: the file is intact." : d.verified === false ? "DOES NOT MATCH" : d.checksum ? "Will be checked when done." : "";
+  const noSum = d.kind === "torrent"; // BitTorrent checks every piece itself
+  $("pwSum").closest("dd").hidden = $("pwSum").closest("dd").previousElementSibling.hidden = noSum;
   $("pwSumNote").style.color = d.verified === true ? "var(--ok)" : d.verified === false ? "var(--err)" : "var(--muted)";
   $("pwFill").firstElementChild.style.width = p + "%";
   $("pwFill").classList.toggle("paused", d.status === "paused" || d.status === "error");
@@ -905,7 +907,8 @@ function renderStatus() {
        ${sched.enabled ? `<span>Scheduler: <b>${esc(sched.start)}${sched.stop ? "–" + esc(sched.stop) : ""}</b> · ${sched.waiting} waiting</span>` : ""}
        <span style="flex:1"></span>
        ${upd.update?.version ? (upd.update.state ? `<span class="updnote">${esc(upd.update.state)}</span>`
-         : `<button class="netbtn updbtn" id="bUpdate" title="${esc(upd.update.notes || "")}">Update to FastDL ${esc(upd.update.version)}</button>`) : ""}
+         : (upd.update.error ? `<span class="updnote" style="color:var(--err)">${esc(upd.update.error)}</span>` : "") + // a failed try: say why, keep the button
+           `<button class="netbtn updbtn" id="bUpdate" title="${esc(upd.update.notes || "")}">${upd.update.error ? "Try again: update" : "Update"} to FastDL ${esc(upd.update.version)}</button>`) : ""}
        ${power.note || power.pending ? `<button class="powerbtn" id="bPower">${esc(power.note ||
          (power.pending === "shutdown" ? "Will shut down when downloads finish" : "Will sleep when downloads finish"))} · Cancel</button>` : ""}
        ${net.links.length > 1
@@ -1055,9 +1058,11 @@ $("grabForm").addEventListener("submit", async e => {
   const chosen = new Set(grabBoxes().filter(b => b.checked).map(b => b.dataset.u));
   const folder = $("grabFolder").value.trim(), page = $("grabUrl").value.trim();
   $("grabGo").disabled = true; quiet++;
-  for (const l of grabbed.filter(l => chosen.has(l.url)))
-    await post("/api/downloads", { url: l.url, referer: page, kind: "file", folder, category: l.cat, filename: l.name, quiet: true }).catch(() => {});
-  await refresh(); quiet--;
+  try {
+    for (const l of grabbed.filter(l => chosen.has(l.url)))
+      await post("/api/downloads", { url: l.url, referer: page, kind: "file", folder, category: l.cat, filename: l.name, quiet: true }).catch(() => {});
+    await refresh();
+  } finally { quiet--; } // always: a stuck counter would stop new downloads from showing their window
   $("grab").close(); cat = "All Downloads";
 });
 
@@ -1131,11 +1136,13 @@ $("multiForm").addEventListener("submit", async e => {
   if (!links.length) return;
   $("multiStart").disabled = true; let failed = [];
   quiet++;
-  for (const url of links) {
-    try { const r = await post("/api/downloads", { url, folder, later: how === "later", quiet: true }); if (!r.ok) failed.push(url); }
-    catch { failed.push(url); }
-  }
-  await refresh(); quiet--;
+  try {
+    for (const url of links) {
+      try { const r = await post("/api/downloads", { url, folder, later: how === "later", quiet: true }); if (!r.ok) failed.push(url); }
+      catch { failed.push(url); }
+    }
+    await refresh();
+  } finally { quiet--; }
   if (failed.length) { $("multiErr").textContent = `${links.length - failed.length} added, ${failed.length} refused (first: ${failed[0]})`; $("multiStart").disabled = false; return; }
   $("multi").close(); cat = "All Downloads";
 });

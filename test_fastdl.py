@@ -438,7 +438,7 @@ with tempfile.TemporaryDirectory() as d:  # tampered installer: downloaded, hash
     real_home, fastdl.HOME = fastdl.HOME, d
     fastdl.UPDATE.clear(); fastdl.UPDATE.update(version="9.0", url="file:///" + fake_setup.replace("\\", "/"), sha256="b" * 64)
     fastdl.install_update()
-    assert "didn't match" in fastdl.UPDATE["state"] and not os.listdir(os.path.join(d, "updates")), fastdl.UPDATE
+    assert "didn't match" in fastdl.UPDATE["error"] and not fastdl.UPDATE["state"] and not os.listdir(os.path.join(d, "updates")), fastdl.UPDATE
     fastdl.HOME = real_home
 fastdl.UPDATE.clear(); fastdl.settings(update_url="")
 
@@ -551,6 +551,9 @@ try:
     with fastdl.opener(None).open(f"{gbase}/file.zip", timeout=10) as r:  # this PC never goes through the proxy
         assert r.read() == b"x" * 10
     assert len(seen_by_proxy) == 1, "localhost must bypass the proxy"
+    with urllib.request.urlopen("http://files.invalid/b.bin", timeout=10) as r:  # urlopen (probe, updates), not only opener()
+        assert r.read() == b"hello"
+    assert seen_by_proxy[-1] == "http://files.invalid/b.bin", "a proxy set in Options must apply to urlopen at once"
     fastdl.set_proxy("none")
     assert os.environ["NO_PROXY"] == "*"
     assert urllib.request.getproxies().get("http") is None
@@ -633,5 +636,107 @@ try:
     assert fastdl.webview2_installed() is False, "no registry key must mean not installed"
 finally:
     winreg.OpenKey = real_open
+
+# ---- fixes from the code review ----
+# Windows device names: "nul.zip" would be written to the NUL device and vanish
+assert fastdl.clean("nul.zip") == "_nul.zip" and fastdl.clean("Con") == "_Con" and fastdl.clean("com1.tar.gz") == "_com1.tar.gz"
+assert fastdl.clean("console.txt") == "console.txt" and fastdl.clean("nulled.zip") == "nulled.zip"
+
+
+# an empty file: servers answer Range: bytes=0-0 with 416 "range not satisfiable"
+class E(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(416 if self.headers.get("Range") else 200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
+esrv = ThreadingHTTPServer(("127.0.0.1", 0), E)
+threading.Thread(target=esrv.serve_forever, daemon=True).start()
+with tempfile.TemporaryDirectory() as d:
+    e = Download(f"http://127.0.0.1:{esrv.server_port}/empty.txt", d)
+    e.run()
+    assert e.status == "done" and os.path.getsize(e.dest) == 0, (e.status, e.error)
+
+# cookies stay with the site they were for: a redirect to another site (a CDN) must not carry them along
+seen_cookie = {}
+
+
+class R(BaseHTTPRequestHandler):
+    def do_GET(self):
+        seen_cookie[self.server.server_port] = self.headers.get("Cookie")
+        loc = {"/to-same": f"http://localhost:{same.server_port}/f", "/to-other": f"http://127.0.0.1:{other.server_port}/f"}.get(self.path)
+        self.send_response(302 if loc else 200)
+        if loc:
+            self.send_header("Location", loc)
+        self.send_header("Content-Length", "3" if not loc else "0")
+        self.end_headers()
+        if not loc:
+            self.wfile.write(b"abc")
+
+    def log_message(self, *a):
+        pass
+
+
+origin, same, other = (ThreadingHTTPServer(("127.0.0.1", 0), R) for _ in range(3))
+for srv_ in (origin, same, other):
+    threading.Thread(target=srv_.serve_forever, daemon=True).start()
+fastdl.probe(f"http://localhost:{origin.server_port}/to-same", {"Cookie": "session=secret"})
+assert seen_cookie[same.server_port] == "session=secret", "same site: the cookie goes along"
+fastdl.probe(f"http://localhost:{origin.server_port}/to-other", {"Cookie": "session=secret"})
+assert seen_cookie[other.server_port] is None, "another site must never get the browser's cookie"
+fastdl.opener(None).open(urllib.request.Request(f"http://localhost:{origin.server_port}/to-other", headers={"Cookie": "x=1"}), timeout=10).read()
+assert seen_cookie[other.server_port] is None, "same rule for the connection workers"
+
+# scheduler: a start time that went by while the PC slept still fires on wake-up, and never fires just because FastDL started
+import datetime as _dt
+
+
+def at(h, m, day=0):
+    d = _dt.date.today() + _dt.timedelta(days=day)
+    return time.mktime((d.year, d.month, d.day, h, m, 0, 0, 0, -1))
+
+
+alldays = range(7)
+assert fastdl.crossed("02:00", alldays, at(1, 0), at(8, 0)) is True, "slept through the start time"
+assert fastdl.crossed("02:00", alldays, at(3, 0), at(8, 0)) is False, "started after it: nothing to catch up"
+assert fastdl.crossed("02:00", alldays, at(1, 59), at(2, 0)) is True, "the ordinary tick"
+assert fastdl.crossed("02:00", alldays, at(23, 0, -1), at(1, 0)) is False
+assert fastdl.crossed("02:00", alldays, at(23, 0, -1), at(3, 0)) is True, "across midnight"
+assert fastdl.crossed("02:00", [(_dt.date.today().weekday() + 1) % 7], at(1, 0), at(8, 0)) is False, "not a chosen day"
+assert not fastdl.crossed("", alldays, at(1, 0), at(8, 0)) and not fastdl.crossed("25:99", alldays, at(1, 0), at(8, 0))
+
+# a step after a download failing (a checksum read refused by antivirus) must not stall the queue behind it
+real_verify, real_max = fastdl.verify, fastdl.MAX_ACTIVE
+
+
+def broken(d):
+    raise PermissionError("antivirus has the file")
+
+
+fastdl.verify, fastdl.MAX_ACTIVE = broken, 1
+with tempfile.TemporaryDirectory() as d:
+    qm = fastdl.Manager()
+    q1, q2 = qm.add(f"{base}/stall-a.bin", d, {}), qm.add(f"{base}/stall-b.bin", d, {})
+    for _ in range(150):
+        if q2.status == "done":
+            break
+        time.sleep(0.1)
+    assert q1.status == "done" and q2.status == "done", (q1.status, q2.status)
+fastdl.verify, fastdl.MAX_ACTIVE = real_verify, real_max
+
+# a failed update download leaves an error beside the Update button, not a status that hides it
+real_home = fastdl.HOME
+with tempfile.TemporaryDirectory() as h:
+    fastdl.HOME = h
+    fastdl.UPDATE.clear()
+    fastdl.UPDATE.update(version="9.9", url="http://127.0.0.1:9/FastDL-Setup.exe", sha256="0" * 64)
+    fastdl.install_update()
+    assert fastdl.UPDATE["state"] == "" and "Couldn't download" in fastdl.UPDATE["error"], fastdl.UPDATE
+    fastdl.UPDATE.clear()
+    fastdl.HOME = real_home
 
 print("all good")

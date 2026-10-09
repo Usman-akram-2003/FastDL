@@ -3,7 +3,7 @@
 python fastdl.py               -> starts the app at http://127.0.0.1:9614
 python fastdl.py URL [folder]  -> download from the command line
 """
-import base64, functools, glob, hashlib, html.parser, http.client, ipaddress, json, os, re, secrets, shutil, socket, subprocess, sys, threading, time, types
+import base64, datetime, functools, glob, hashlib, html.parser, http.client, ipaddress, json, os, re, secrets, shutil, socket, subprocess, sys, threading, time, types
 import urllib.error, urllib.parse, urllib.request, uuid, webbrowser
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,7 +70,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.8"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.9"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -82,15 +82,28 @@ DEFAULT_FOLDER = os.path.join(os.path.expanduser("~"), "Downloads")
 UA = {"User-Agent": "Mozilla/5.0 FastDL"}
 
 
+RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+
+
 def clean(name):
     """Safe Windows filename."""
-    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name or "").strip(". ")[:150]
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name or "").strip(". ")[:150]
+    if name.split(".")[0].rstrip().upper() in RESERVED:  # "nul.zip" would be written to the NUL device and vanish
+        name = "_" + name
+    return name
 
 
 def probe(url, headers):
     """Return (final_url, filename, size or None, supports_ranges)."""
     req = urllib.request.Request(url, headers={**headers, "Range": "bytes=0-0"})
-    with urllib.request.urlopen(req, timeout=30) as r:
+    try:
+        r = urllib.request.urlopen(req, timeout=30)
+    except urllib.error.HTTPError as e:
+        if e.code != 416:
+            raise
+        # "range not satisfiable" for byte 0: the file is empty. Ask plainly: 0 bytes, nothing to split.
+        r = urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30)
+    with r:
         final = r.geturl()
         m = Message()
         m["content-disposition"] = r.headers.get("Content-Disposition", "")
@@ -166,13 +179,35 @@ def set_proxy(p):
     elif p:
         os.environ.update(HTTP_PROXY=p, HTTPS_PROXY=p, NO_PROXY="localhost,127.0.0.1")
     opener.cache_clear()  # openers made earlier keep the old proxy
+    use_safe_opener()     # ... and so does urlopen's: a proxy changed in Options applied only after a restart
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """The browser's cookies are for the site the download came from. Followed to another site (a CDN, a file host's
+    storage servers), they stay behind: urllib would send them along, to a third party."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and site_of(newurl) != site_of(req.full_url):
+            for h in ("Cookie", "Authorization"):
+                new.headers.pop(h, None)
+                new.unredirected_hdrs.pop(h, None)
+        return new
+
+
+def use_safe_opener():
+    """urllib.request.urlopen (probe, updates ...) goes through _SafeRedirect. Called again by set_proxy: the
+    default opener reads the proxy settings once, when it is built."""
+    urllib.request.install_opener(urllib.request.build_opener(_SafeRedirect))
+
+
+use_safe_opener()
 
 
 @functools.lru_cache(maxsize=None)
 def opener(ip):
     """urllib opener whose sockets leave through the link that owns `ip` (None = Windows' default route)."""
     if not ip:
-        return urllib.request.build_opener()
+        return urllib.request.build_opener(_SafeRedirect)
     bind = {"source_address": (ip, 0)}
 
     class Http(urllib.request.HTTPHandler):
@@ -183,7 +218,7 @@ def opener(ip):
         def https_open(self, req):
             return self.do_open(functools.partial(http.client.HTTPSConnection, **bind), req, context=self._context)
 
-    return urllib.request.build_opener(Http, Https)
+    return urllib.request.build_opener(Http, Https, _SafeRedirect)
 
 
 def pick_dest(folder, name, url):
@@ -865,8 +900,11 @@ def fetch_tool(name):
             os.close(os.open(lock, os.O_CREAT | os.O_EXCL))
             break
         except FileExistsError:  # the other one is fetching it: wait for it (a lock older than 30 min is a killed run's)
-            if time.time() - os.path.getmtime(lock) > 1800:
-                os.remove(lock)
+            try:
+                if time.time() - os.path.getmtime(lock) > 1800:
+                    os.remove(lock)
+            except OSError:
+                pass  # it was just removed: the next round takes it
             time.sleep(1)
     if os.path.isfile(exe):  # it finished while we waited
         os.remove(lock)
@@ -954,6 +992,8 @@ def install_webview2():
 def install_tools():
     """`FastDL.exe --install-tools`, run by the installer: whichever of the helpers is missing, via winget when the
     PC has it, otherwise (a clean Windows has no winget) straight from the official release."""
+    o = options()  # this process is not the app: take the proxy from Options (a PC behind a proxy needs it for these downloads)
+    set_proxy(o["proxy"] if proxy_ok(o["proxy"]) else "")
     install_webview2()  # (does nothing when it's there, the usual case)
     for name in TOOLS:
         if find_tool(name):
@@ -1351,18 +1391,36 @@ SCHEDULE_DEFAULT = {"enabled": False, "start": "02:00", "stop": "07:00", "days":
 def scheduler():
     """IDM-style scheduler: at the start time every scheduled download starts; at the stop time
     (optional) they pause, and carry on at the next start. Checked every 15 s."""
-    fired = set()  # (event, date) already done, so each start/stop happens once a day
+    last = time.time()
     while True:
-        s = settings().get("schedule") or {}
-        now = time.localtime()
-        today, hm = time.strftime("%Y-%m-%d", now), time.strftime("%H:%M", now)
-        if s.get("enabled") and now.tm_wday in s.get("days", range(7)):
-            for event, start in (("start", True), ("stop", False)):
-                if s.get(event) == hm and (event, today) not in fired:
-                    fired.add((event, today))
-                    M.run_schedule(start)
-        # ponytail: a start time that passes while the PC sleeps is skipped until the next day
         time.sleep(15)
+        now = time.time()
+        s = settings().get("schedule") or {}
+        if s.get("enabled"):
+            days = s.get("days", range(7))
+            began, ended = crossed(s.get("start"), days, last, now), crossed(s.get("stop"), days, last, now)
+            if began and ended:
+                pass  # the PC slept through the whole window: starting only to stop again would be silly
+            elif began:
+                M.run_schedule(True)
+            elif ended:
+                M.run_schedule(False)
+        last = now
+
+
+def crossed(hhmm, days, t0, t1):
+    """Did the clock pass hh:mm, on one of the chosen weekdays, between t0 and t1? Because it looks at the whole
+    span since the last check, a start time that went by while the PC slept still fires when it wakes up
+    (and starting FastDL at 15:00 doesn't fire a 02:00 start that went by long before)."""
+    if not hhmm or not HHMM.match(str(hhmm)):
+        return False
+    h, m = int(hhmm[:2]), int(hhmm[3:])
+    today = datetime.date.fromtimestamp(t1)
+    for day in (today - datetime.timedelta(days=1), today):  # longer gaps: only the latest of each counts
+        at = time.mktime((day.year, day.month, day.day, h, m, 0, 0, 0, -1))
+        if t0 < at <= t1 and day.weekday() in days:
+            return True
+    return False
 
 
 def power(action):
@@ -1456,12 +1514,16 @@ class Manager:
                     threading.Thread(target=self._go, args=(d,), daemon=True).start()
 
     def _go(self, d):
-        d.run()
-        if d.status == "done":
-            verify(d)
-            self.finished(d)
-        self.kick()
-        self.power_check()
+        try:
+            d.run()
+            if d.status == "done":
+                verify(d)
+                self.finished(d)
+        except Exception as e:  # e.g. antivirus holding the new file while it is checksummed: never stall the queue over it
+            print("after-download step failed:", e)
+        finally:
+            self.kick()
+            self.power_check()
 
     def finished(self, d):
         """Options on completion."""
@@ -1751,7 +1813,7 @@ def install_update():
     """Download the new installer, check it's exactly the published file (SHA-256; and, if FastDL itself is
     signed, the same signature), run it silently and step aside. The installer closes FastDL and restarts it."""
     import hashlib
-    UPDATE["state"] = "Downloading the update..."
+    UPDATE["state"], UPDATE["error"] = "Downloading the update...", ""
     folder = os.path.join(HOME, "updates")
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"FastDL-Setup-{UPDATE['version']}.exe")
@@ -1764,8 +1826,8 @@ def install_update():
         if dl.size:
             UPDATE["state"] = f"Downloading the update... {100 * dl.done // dl.size}%"
         t.join(0.5)
-    if dl.status != "done":
-        UPDATE["state"] = f"Couldn't download the update: {dl.error}"
+    if dl.status != "done":  # "error" (not "state"): the Update button stays, so it can be tried again
+        UPDATE["state"], UPDATE["error"] = "", f"Couldn't download the update: {dl.error}"
         return
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -1773,11 +1835,11 @@ def install_update():
             h.update(block)
     if h.hexdigest() != UPDATE["sha256"]:
         os.remove(path)
-        UPDATE["state"] = "The download didn't match the published file, so it was not installed."
+        UPDATE["state"], UPDATE["error"] = "", "The download didn't match the published file, so it was not installed."
         return
     if signature_status(sys.executable) == "Valid" and signature_status(path) != "Valid":
         os.remove(path)  # a signed FastDL only accepts a signed update
-        UPDATE["state"] = "The update isn't signed, so it was not installed."
+        UPDATE["state"], UPDATE["error"] = "", "The update isn't signed, so it was not installed."
         return
     UPDATE["state"] = "Installing... FastDL will restart."
     M.save()
@@ -2135,6 +2197,8 @@ class API(BaseHTTPRequestHandler):
                 return self.send(400, {"error": friendly_error(e)})
         if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "checksum" and p[2] in M.items:
             d, value = M.items[p[2]], parse_checksum(body.get("checksum"))
+            if isinstance(d, Torrent):
+                return self.send(400, {"error": "Torrents are checked piece by piece by BitTorrent itself"})
             if value is None:
                 return self.send(400, {"error": "That isn't an MD5, SHA-1, SHA-256 or SHA-512 checksum"})
             d.checksum, d.verified = value, None

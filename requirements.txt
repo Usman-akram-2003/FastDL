@@ -1,6 +1,8 @@
+# yt-dlp is left unpinned on purpose: sites change and old versions stop working (update_deps.py keeps it fresh).
+# The rest are capped below the next major version, so a surprise breaking release can't slip into a build.
 yt-dlp[default]
-pywebview
-pystray
-pillow
-truststore
-pyinstaller
+pywebview>=6.2,<7
+pystray>=0.19,<1
+pillow>=12,<13
+truststore>=0.10,<1
+pyinstaller>=6.22,<7
