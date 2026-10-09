@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: UsmanAkram.FastDL
+PackageVersion: 1.9
+InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: 2026-10-09
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/Usman-akram-2003/FastDL/releases/download/v1.9/FastDL-Setup.exe
+  InstallerSha256: 7ABB367A61D81A44AD616B97602512623807E6CC45FD9D2F311B57157FEE949F
+ManifestType: installer
+ManifestVersion: 1.12.0
