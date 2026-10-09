@@ -23,7 +23,7 @@ From then on every `v*` tag is signed. The slugs above are the ones the workflow
 
 1. Raise `APP_VERSION` in `fastdl.py`, commit, push.
 2. `git tag vX.Y && git push origin vX.Y`. The workflow runs the tests, builds, signs, and publishes the release.
-3. `python packaging.py`, then commit `bucket/` (Scoop), and send the winget pull request.
+3. `python manifests.py`, then commit `bucket/` (Scoop), and send the winget pull request.
 
 ## What is signed
 

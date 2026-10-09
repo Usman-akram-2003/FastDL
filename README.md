@@ -65,7 +65,7 @@ python firefox.py           # dist\FastDL-Firefox.zip (the Firefox extension)
 ```
 
 **Releasing**: raise `APP_VERSION` in `fastdl.py`, run `python build.py`, then
-`gh release create vX.Y dist\FastDL-Setup.exe dist\latest.json dist\FastDL-Firefox.zip --title "FastDL X.Y" --notes-file notes.md`, then `python packaging.py` and commit `bucket/` (Scoop follows it by itself via `checkver`).
+`gh release create vX.Y dist\FastDL-Setup.exe dist\latest.json dist\FastDL-Firefox.zip --title "FastDL X.Y" --notes-file notes.md`, then `python manifests.py` and commit `bucket/` (Scoop follows it by itself via `checkver`).
 Installed copies find the update within a day.
 
 **Code signing**: set `FASTDL_SIGN_THUMBPRINT` (certificate in Windows) or `FASTDL_SIGN_PFX` + `FASTDL_SIGN_PASSWORD` before `build.py`: the app, the installer and the uninstaller get signed.
@@ -76,7 +76,7 @@ FastDL's installer is **not code-signed yet**, so Windows may show "Windows prot
 
 - **Team:** one maintainer, [Usman-akram-2003](https://github.com/Usman-akram-2003), who writes, reviews and approves releases.
 - **Privacy:** FastDL runs on your PC only. It talks to the sites you download from, and to GitHub to look for updates (which, like any web request, shows GitHub your IP address). Nothing else is sent anywhere.
-- **Changes FastDL makes to your system:** it starts with Windows (turn off in Options), registers a small launcher so the browser extension can start it, installs Microsoft's WebView2 runtime if your PC lacks it, and downloads ffmpeg, aria2 and Deno into `%USERPROFILE%\.fastdl	ools`. The uninstaller removes the program and its registry entries.
+- **Changes FastDL makes to your system:** it starts with Windows (turn off in Options), registers a small launcher so the browser extension can start it, installs Microsoft's WebView2 runtime if your PC lacks it, and downloads ffmpeg, aria2 and Deno into `%USERPROFILE%\.fastdl\tools`. The uninstaller removes the program and its registry entries.
 
 ## License
 
@@ -91,7 +91,7 @@ MIT: see [LICENSE](LICENSE). FastDL also uses third-party software (yt-dlp, pywe
 | `extension/` | the browser extension (Chrome, Edge, Brave) |
 | `firefox.py` | packs the same extension for Firefox |
 | `docs/` | the website (GitHub Pages) |
-| `packaging.py`, `bucket/`, `packaging/` | winget and Scoop manifests, made from `dist/latest.json` after each release |
+| `manifests.py`, `bucket/`, `winget/` | winget and Scoop manifests, made from `dist/latest.json` after each release |
 | `build.py`, `installer.iss` | building the app and the installer |
 | `update_deps.py` | keeps yt-dlp, ffmpeg, aria2 and Deno up to date |
 | `test_fastdl.py` | the tests |

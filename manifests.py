@@ -1,8 +1,8 @@
-"""Package manifests for winget and Scoop, from the build's dist/latest.json:  python packaging.py
+"""Package manifests for winget and Scoop, from the build's dist/latest.json:  python manifests.py
 
   bucket/fastdl.json                         Scoop: `scoop bucket add fastdl https://github.com/Usman-akram-2003/FastDL`,
                                              then `scoop install fastdl` (checkver/autoupdate keep it current)
-  packaging/winget/<version>/*.yaml          winget: copy to manifests/u/UsmanAkram/FastDL/<version>/ in a fork of
+  winget/<version>/*.yaml          winget: copy to manifests/u/UsmanAkram/FastDL/<version>/ in a fork of
                                              github.com/microsoft/winget-pkgs and open a pull request
 
 Run it after `build.py` and the GitHub release, so the hash and address are the published installer's.
@@ -46,7 +46,7 @@ def main():
                        "hash": {"url": REPO + "/releases/download/v$version/latest.json", "jsonpath": "$.sha256"}},
     }, indent=2) + "\n")
 
-    d = os.path.join(HERE, "packaging", "winget", v)
+    d = os.path.join(HERE, "winget", v)
     head = f"PackageIdentifier: {ID}\nPackageVersion: {v}\n"
     schema = lambda kind: f"# yaml-language-server: $schema=https://aka.ms/winget-manifest.{kind}.1.12.0.schema.json\n\n"
     write(os.path.join(d, f"{ID}.yaml"), schema("version") + head + "DefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.12.0\n")
