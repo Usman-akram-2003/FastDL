@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import PyInstaller.__main__
 from fastdl import APP_VERSION, app_icon
 
@@ -28,6 +29,28 @@ BUILD = os.path.join(HERE, "build")
 DIST = os.path.join(HERE, "dist")
 ICON = os.path.join(BUILD, "fastdl.ico")
 TIMESTAMP = "http://timestamp.digicert.com"
+
+
+def write_latest():
+    """latest.json: FastDL compares versions and checks the installer's SHA-256 before installing it.
+    `python build.py --latest` redoes only this, from dist/FastDL-Setup.exe: the CI build runs it after SignPath has
+    signed the installer, because signing changes the file and so its hash."""
+    setup = os.path.join(DIST, "FastDL-Setup.exe")
+    h = hashlib.sha256()
+    with open(setup, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    # this exact version's installer on GitHub Releases (the SHA-256 belongs to this file only)
+    release = os.environ.get("FASTDL_RELEASE_URL",
+                             f"https://github.com/Usman-akram-2003/FastDL/releases/download/v{APP_VERSION}/FastDL-Setup.exe")
+    with open(os.path.join(DIST, "latest.json"), "w") as f:
+        json.dump({"version": APP_VERSION, "url": release, "sha256": h.hexdigest(), "notes": ""}, f, indent=2)
+    print(f"latest.json for FastDL {APP_VERSION}: sha256 {h.hexdigest()}")
+
+
+if "--latest" in sys.argv:
+    write_latest()
+    sys.exit()
 
 os.makedirs(BUILD, exist_ok=True)
 app_icon(256).save(ICON, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
@@ -85,14 +108,5 @@ if args:  # Inno signs the setup and its uninstaller with the same certificate
 subprocess.run([*cmd, os.path.join(HERE, "installer.iss")], check=True)
 setup = os.path.join(DIST, "FastDL-Setup.exe")
 
-# latest.json: FastDL compares versions and checks the installer's SHA-256 before installing it
-h = hashlib.sha256()
-with open(setup, "rb") as f:
-    for block in iter(lambda: f.read(1 << 20), b""):
-        h.update(block)
-# this exact version's installer on GitHub Releases (the SHA-256 above belongs to this file only)
-release = os.environ.get("FASTDL_RELEASE_URL",
-                         f"https://github.com/Usman-akram-2003/FastDL/releases/download/v{APP_VERSION}/FastDL-Setup.exe")
-with open(os.path.join(DIST, "latest.json"), "w") as f:
-    json.dump({"version": APP_VERSION, "url": release, "sha256": h.hexdigest(), "notes": ""}, f, indent=2)
+write_latest()
 print(f"FastDL {APP_VERSION}: {setup} ({'signed' if args else 'NOT signed'}) + dist\\latest.json")

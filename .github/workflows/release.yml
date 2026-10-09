@@ -1,0 +1,96 @@
+name: Release
+
+# Push a tag (git tag v1.9 && git push origin v1.9) and this builds FastDL on GitHub's Windows runner, has SignPath sign
+# the installer (once it's set up: see signing/README.md), and publishes the GitHub release.
+# "Run workflow" by hand builds only: the files come back as a downloadable artifact, nothing is published.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  actions: read     # SignPath reads this run's artifact
+  contents: write   # to publish the release
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Inno Setup if the runner lacks it
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Tests
+        run: python test_fastdl.py
+
+      - name: The tag must match APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = python -c "import fastdl; print(fastdl.APP_VERSION)"
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match APP_VERSION $v in fastdl.py" }
+
+      - name: Build the installer
+        run: python build.py
+
+      - name: Build the Firefox extension
+        run: python firefox.py
+
+      # ---- code signing with SignPath: only on a release tag, and only once SIGNPATH_ORGANIZATION_ID is set ----
+      - name: Upload the unsigned installer
+        id: unsigned
+        if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: dist/FastDL-Setup.exe
+
+      - name: Sign the installer (SignPath)
+        if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: fastdl
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Use the signed installer (its hash changes, so latest.json is redone)
+        if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+        shell: pwsh
+        run: |
+          Copy-Item signed\FastDL-Setup.exe dist\FastDL-Setup.exe -Force
+          python build.py --latest
+          (Get-AuthenticodeSignature dist\FastDL-Setup.exe).Status
+
+      - name: Keep the build files
+        uses: actions/upload-artifact@v4
+        with:
+          name: FastDL-release-files
+          path: |
+            dist/FastDL-Setup.exe
+            dist/latest.json
+            dist/FastDL-Firefox.zip
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" dist/FastDL-Setup.exe dist/latest.json dist/FastDL-Firefox.zip --title "FastDL $($env:GITHUB_REF_NAME.TrimStart('v'))" --generate-notes
+        shell: pwsh
