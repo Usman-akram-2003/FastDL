@@ -2,7 +2,7 @@
   "version": "1.8",
   "description": "A fast, free download manager for Windows: files, videos and torrents, with a browser button like IDM.",
   "homepage": "https://usman-akram-2003.github.io/FastDL/",
-  "license": "Freeware",
+  "license": "MIT",
   "url": "https://github.com/Usman-akram-2003/FastDL/releases/download/v1.8/FastDL-Setup.exe",
   "hash": "f4cc1f77cd3ee6e322f7ab9aa52955cb9d6a8da6b9f29b29171c1975255cc02a",
   "installer": {

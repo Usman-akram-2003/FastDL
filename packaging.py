@@ -16,7 +16,7 @@ REPO = "https://github.com/Usman-akram-2003/FastDL"
 SITE = "https://usman-akram-2003.github.io/FastDL/"
 ID = "UsmanAkram.FastDL"
 DESC = "A fast, free download manager for Windows: files, videos and torrents, with a browser button like IDM."
-LICENSE = "Freeware"  # ponytail: no license file in the repo yet; an OSI one (MIT) is needed for SignPath
+LICENSE = "MIT"
 
 
 def write(path, text):
@@ -70,6 +70,7 @@ PublisherUrl: https://github.com/Usman-akram-2003
 PackageName: FastDL
 PackageUrl: {SITE}
 License: {LICENSE}
+LicenseUrl: {REPO}/blob/main/LICENSE
 ShortDescription: "{DESC}"
 Description: "FastDL splits every download over many connections at once. Files, videos from about 1,800 sites, and torrents, with a button in the browser, a scheduler, speed limits, mirrors, a site grabber and a light/dark theme that follows Windows."
 Moniker: fastdl

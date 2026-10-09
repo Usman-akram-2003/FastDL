@@ -70,6 +70,10 @@ Installed copies find the update within a day.
 
 **Code signing**: set `FASTDL_SIGN_THUMBPRINT` (certificate in Windows) or `FASTDL_SIGN_PFX` + `FASTDL_SIGN_PASSWORD` before `build.py`: the app, the installer and the uninstaller get signed.
 
+## License
+
+MIT: see [LICENSE](LICENSE). FastDL also uses third-party software (yt-dlp, pywebview, aria2, ffmpeg and others) under their own licenses.
+
 ## Files
 
 | File | What it is |
