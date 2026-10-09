@@ -48,8 +48,9 @@ def main():
 
     d = os.path.join(HERE, "packaging", "winget", v)
     head = f"PackageIdentifier: {ID}\nPackageVersion: {v}\n"
-    write(os.path.join(d, f"{ID}.yaml"), head + "DefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.6.0\n")
-    write(os.path.join(d, f"{ID}.installer.yaml"), head + f"""InstallerType: inno
+    schema = lambda kind: f"# yaml-language-server: $schema=https://aka.ms/winget-manifest.{kind}.1.12.0.schema.json\n\n"
+    write(os.path.join(d, f"{ID}.yaml"), schema("version") + head + "DefaultLocale: en-US\nManifestType: version\nManifestVersion: 1.12.0\n")
+    write(os.path.join(d, f"{ID}.installer.yaml"), schema("installer") + head + f"""InstallerType: inno
 Scope: user
 InstallModes:
 - interactive
@@ -62,9 +63,9 @@ Installers:
   InstallerUrl: {url}
   InstallerSha256: {sha}
 ManifestType: installer
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
 """)
-    write(os.path.join(d, f"{ID}.locale.en-US.yaml"), head + f"""PackageLocale: en-US
+    write(os.path.join(d, f"{ID}.locale.en-US.yaml"), schema("defaultLocale") + head + f"""PackageLocale: en-US
 Publisher: Usman Akram
 PublisherUrl: https://github.com/Usman-akram-2003
 PackageName: FastDL
@@ -82,7 +83,7 @@ Tags:
 - idm
 ReleaseNotesUrl: {REPO}/releases/tag/v{v}
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: 1.12.0
 """)
 
 
