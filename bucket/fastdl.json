@@ -1,10 +1,10 @@
 {
-  "version": "1.9",
+  "version": "1.10",
   "description": "A fast, free download manager for Windows: files, videos and torrents, with a browser button like IDM.",
   "homepage": "https://usman-akram-2003.github.io/FastDL/",
   "license": "MIT",
-  "url": "https://github.com/Usman-akram-2003/FastDL/releases/download/v1.9/FastDL-Setup.exe",
-  "hash": "7abb367a61d81a44ad616b97602512623807e6cc45fd9d2f311b57157fee949f",
+  "url": "https://github.com/Usman-akram-2003/FastDL/releases/download/v1.10/FastDL-Setup.exe",
+  "hash": "b87cbfad23634a51d68addb20e92241c75df9c6c0165d7a264f35b34c29d9cac",
   "installer": {
     "script": "Start-Process -FilePath \"$dir\\FastDL-Setup.exe\" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait"
   },
