@@ -26,18 +26,15 @@ try {
 
   # 1. install, as a user would (silent, helpers task on)
   $t = Get-Date
-  $p = Start-Process C:\fastdl-dist\FastDL-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="helpers,desktopicon"' -PassThru -Wait
+  $p = Start-Process C:\fastdl-dist\FastDL-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="helpers,desktopicon"' -PassThru
+  $p.WaitForExit()  # not Start-Process -Wait: that also waits for the helper download the installer starts in the background
   Log ("installer exit code {0}, took {1:n0} s" -f $p.ExitCode, ((Get-Date) - $t).TotalSeconds)
   $app = "$env:LOCALAPPDATA\Programs\FastDL"
   Check (Test-Path "$app\FastDL.exe") "FastDL.exe installed in $app"
   Check (Test-Path "$app\extension\manifest.json") "browser extension folder installed"
   Check (Test-Path "$env:USERPROFILE\Desktop\FastDL.lnk") "desktop shortcut created"
   Check (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\FastDL.lnk") "Start menu entry created"
-  foreach ($n in "aria2c", "ffmpeg", "deno") {
-    $f = "$env:USERPROFILE\.fastdl\tools\$n.exe"
-    Check ((Test-Path $f) -and (Get-Item $f).Length -gt 1MB) "helper downloaded by the installer: $n ($(if (Test-Path $f) { '{0:n1} MB' -f ((Get-Item $f).Length / 1MB) } else { 'missing' }))"
-  }
-  Log "after install: ffmpeg=$(Has ffmpeg) aria2c=$(Has aria2c) deno=$(Has deno) (this shell's PATH; FastDL also looks in winget's folders)"
+  Log ("installer time {0:n0} s (about 2-3 minutes when WebView2 has to be installed; otherwise a few seconds, the helpers download in the background)" -f ((Get-Date) - $t).TotalSeconds)
 
   # 2. does it start by itself and answer
   $up = $false
@@ -50,6 +47,33 @@ try {
     Check $up "FastDL started when launched by hand"
   }
   Log "FastDL.exe running: $([bool](Get-Process FastDL -ErrorAction SilentlyContinue))"
+
+  # the app window must be drawn by WebView2; with only Windows' old built-in engine it is blank and unstyled
+  $wk = "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+  $wv = (Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" -ErrorAction SilentlyContinue).pv
+  if (-not $wv) { $wv = (Get-ItemProperty "HKCU:\$wk" -ErrorAction SilentlyContinue).pv }
+  Check ([bool]$wv) "WebView2 runtime is installed (version $wv)"
+  for ($i = 0; $i -lt 30 -and -not (Get-Process msedgewebview2 -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+  Check ([bool](Get-Process msedgewebview2 -ErrorAction SilentlyContinue)) "the app window is drawn by WebView2 (msedgewebview2.exe is running)"
+  Start-Sleep 3
+  try {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+    [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+    $bmp.Save("$out\screen.png"); Log "screenshot saved: sandbox-results\screen.png"
+  } catch { Log "no screenshot (this session has no desktop to capture): $($_.Exception.Message)" }
+
+  # the helper downloads the installer started in the background
+  $w = Get-Date
+  while (((Get-Date) - $w).TotalSeconds -lt 900 -and ("aria2c", "ffmpeg", "deno" | Where-Object { -not (Test-Path "$env:USERPROFILE\.fastdl\tools\$_.exe") })) { Start-Sleep 5 }
+  Log ("helpers finished downloading {0:n0} s after the window check" -f ((Get-Date) - $w).TotalSeconds)
+  Log ("tools folder: " + ((Get-ChildItem "$env:USERPROFILE\.fastdl\tools" -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name) $([math]::Round($_.Length/1MB,1))MB" }) -join ", "))
+  Log ("FastDL processes: " + ((Get-CimInstance Win32_Process -Filter "Name='FastDL.exe'" | ForEach-Object { $_.CommandLine }) -join " | "))
+  Get-Content "$env:USERPROFILE\.fastdl\fastdl.log" -Tail 12 -ErrorAction SilentlyContinue | ForEach-Object { Log "fastdl.log: $_" }
+  foreach ($n in "aria2c", "ffmpeg", "deno") {
+    $f = "$env:USERPROFILE\.fastdl\tools\$n.exe"
+    Check ((Test-Path $f) -and (Get-Item $f).Length -gt 1MB) "helper downloaded in the background: $n ($(if (Test-Path $f) { '{0:n1} MB' -f ((Get-Item $f).Length / 1MB) } else { 'missing' }))"
+  }
 
   # 3. what FastDL registered for the browser extension and autostart
   $k = "HKCU:\Software"

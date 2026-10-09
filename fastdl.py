@@ -70,7 +70,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.7"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.8"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -707,6 +707,15 @@ class Video(Download):
 
     def _run(self):
         import yt_dlp
+        # the installer fetches these in the background; if this video is first (or it was skipped), get them now
+        for tool in ("ffmpeg", "deno") if site_of(self.url) in ("youtube.com", "youtu.be") else ("ffmpeg",):
+            if not find_tool(tool):
+                self.phase = f"Getting {tool} (once, about {'100' if tool == 'ffmpeg' else '40'} MB)..."
+                try:
+                    fetch_tool(tool)
+                except Exception as e:
+                    print("fetch", tool, "failed:", e)  # carry on: yt-dlp falls back to what it can do without it
+        self.phase = ""
 
         def progress(d):
             if self.stop.is_set():
@@ -850,14 +859,30 @@ def fetch_tool(name):
         raise IOError(f"no SHA-256 published for {name}")
     os.makedirs(TOOLS_DIR, exist_ok=True)
     zpath, exe = os.path.join(TOOLS_DIR, name + ".zip"), os.path.join(TOOLS_DIR, name + ".exe")
+    lock = os.path.join(TOOLS_DIR, name + ".lock")  # the installer's background step and the app may both want it
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL))
+            break
+        except FileExistsError:  # the other one is fetching it: wait for it (a lock older than 30 min is a killed run's)
+            if time.time() - os.path.getmtime(lock) > 1800:
+                os.remove(lock)
+            time.sleep(1)
+    if os.path.isfile(exe):  # it finished while we waited
+        os.remove(lock)
+        return exe
     for p in (zpath, zpath + ".fdpart", zpath + ".fdl"):  # leftovers of an interrupted try: start clean
         if os.path.exists(p):
             os.remove(p)
     try:
-        d = Download(url, TOOLS_DIR, title=name + ".zip")
-        d.run()
-        if d.status != "done":
-            raise IOError(d.error or "download failed")
+        for attempt in range(4):  # a dropped connection (GitHub's CDN did that) resumes from the parts already there
+            d = Download(url, TOOLS_DIR, conns=4, title=name + ".zip")  # 4: gentle, release CDNs cut busy clients
+            d.run()
+            if d.status == "done":
+                break
+            if attempt == 3:
+                raise IOError(d.error or "download failed")
+            time.sleep(3 * (attempt + 1))
         h = hashlib.sha256()
         with open(d.dest, "rb") as f:
             while chunk := f.read(1 << 20):
@@ -871,22 +896,72 @@ def fetch_tool(name):
                 shutil.copyfileobj(src, dst)
         os.replace(exe + ".tmp", exe)
     finally:
-        for p in glob.glob(glob.escape(zpath) + "*") + [exe + ".tmp"]:
+        for p in glob.glob(glob.escape(zpath) + "*") + [exe + ".tmp", lock]:
             if os.path.exists(p):
                 os.remove(p)
     return exe
 
 
+WEBVIEW2_GUIDS = ("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",  # runtime, then Beta / Dev / Canary: what pywebview accepts
+                  "{2CD8A007-E189-409D-A2C8-9AF4EF3C72AA}", "{0D50BFEC-CD6A-4F9A-964C-C7416E3ACB10}",
+                  "{65C35B14-6C1D-4122-AC46-7148CC9D6497}")
+WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"  # Microsoft's Evergreen bootstrapper (signed)
+
+
+def webview2_installed():
+    """The same registry test pywebview makes, so we know before it silently picks the wrong engine."""
+    if os.name != "nt":
+        return True
+    import winreg
+    for guid in WEBVIEW2_GUIDS:
+        for hive, wow in ((winreg.HKEY_CURRENT_USER, ""), (winreg.HKEY_LOCAL_MACHINE, "WOW6432Node\\")):
+            try:
+                with winreg.OpenKey(hive, rf"SOFTWARE\{wow}Microsoft\EdgeUpdate\Clients\{guid}") as k:
+                    if version_tuple(winreg.QueryValueEx(k, "pv")[0]) >= (86, 0, 622):
+                        return True
+            except OSError:
+                pass
+    return False
+
+
+def install_webview2():
+    """Download Microsoft's WebView2 bootstrapper, check it is really Microsoft-signed, run it silently."""
+    if webview2_installed():
+        return True
+    os.makedirs(TOOLS_DIR, exist_ok=True)
+    path = os.path.join(TOOLS_DIR, "MicrosoftEdgeWebview2Setup.exe")
+    for p in glob.glob(glob.escape(path) + "*") + glob.glob(os.path.join(TOOLS_DIR, "MicrosoftEdgeWebview2Setup (*")):
+        os.remove(p)
+    try:
+        d = Download(WEBVIEW2_URL, TOOLS_DIR, title="MicrosoftEdgeWebview2Setup.exe")
+        d.run()
+        if d.status != "done":
+            raise IOError(d.error or "download failed")
+        if FROZEN and signature_status(d.dest) != "Valid":
+            raise IOError("the WebView2 installer isn't validly signed, not running it")
+        subprocess.run([d.dest, "/silent", "/install"], timeout=900, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:
+        print("webview2 install failed:", e)
+    finally:
+        for p in glob.glob(os.path.join(TOOLS_DIR, "MicrosoftEdgeWebview2Setup*")):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return webview2_installed()
+
+
 def install_tools():
     """`FastDL.exe --install-tools`, run by the installer: whichever of the helpers is missing, via winget when the
     PC has it, otherwise (a clean Windows has no winget) straight from the official release."""
+    install_webview2()  # (does nothing when it's there, the usual case)
     for name in TOOLS:
         if find_tool(name):
             continue
         if shutil.which("winget"):
             try:
                 subprocess.run(["winget", "install", "--id", WINGET_IDS[name], "-e", "--silent", "--accept-source-agreements",
-                                "--accept-package-agreements"], timeout=900, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                                "--accept-package-agreements"], timeout=300, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             except (OSError, subprocess.TimeoutExpired) as e:
                 print("winget", name, e)
         if not find_tool(name):
@@ -2210,6 +2285,8 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if a != "--tray"]
     if args == ["--install-tools"]:
         install_tools()
+    elif args == ["--install-webview2"]:  # the installer runs this first when the PC lacks it (it's quick: the app needs it)
+        install_webview2()
     elif args:
         cli(args[0], args[1] if len(args) > 1 else ".")
     else:
@@ -2236,11 +2313,17 @@ if __name__ == "__main__":
         threading.Thread(target=M.autosave, daemon=True).start()
         threading.Thread(target=scheduler, daemon=True).start()
         threading.Thread(target=update_checker, daemon=True).start()
+        # Without the WebView2 runtime pywebview quietly falls back to Windows' ancient built-in engine, which can't
+        # draw this UI at all (a blank, unstyled window). So: no window then; the UI opens in the browser instead,
+        # and the runtime is installed in the background so the next start gets the real window.
+        window_ok = webview2_installed()
+        if not window_ok:
+            threading.Thread(target=install_webview2, daemon=True).start()
         try:
             import webview  # the app's own window (WebView2, built into Windows), not a browser tab
         except ImportError:
             webview = None
-        if webview:
+        if webview and window_ok:
             threading.Thread(target=srv.serve_forever, daemon=True).start()
             start_tray()
             threading.Thread(target=progress_titles, daemon=True).start()
@@ -2249,9 +2332,11 @@ if __name__ == "__main__":
             WINDOW.events.closing += on_close  # X hides to the tray instead of quitting
             webview.start()  # returns only if the window really closed (no tray icon available)
             quit_app()
-        else:  # pywebview missing: fall back to the browser
+        else:  # no window engine (pywebview or WebView2 missing): the UI in the browser; tray icon as usual
             print(f"FastDL running at {url}  (Ctrl+C to quit)")
-            webbrowser.open(url)
+            start_tray()
+            if not tray_start:
+                webbrowser.open(url)
             try:
                 srv.serve_forever()
             finally:

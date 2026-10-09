@@ -603,7 +603,35 @@ with tempfile.TemporaryDirectory() as tools:
         except IOError as e:
             assert "checksum" in str(e), e
         assert os.listdir(tools) == [], "refused download must leave nothing behind: " + str(os.listdir(tools))
+# another process is already fetching the same helper: wait for it, never download it twice
+with tempfile.TemporaryDirectory() as tools:
+    fastdl.TOOLS_DIR = tools
+    fastdl.TOOLS["faketool"] = ("http://127.0.0.1:9/never.zip", "0" * 64)  # unreachable: a download attempt would fail
+    lock, exe = os.path.join(tools, "faketool.lock"), os.path.join(tools, "faketool.exe")
+    open(lock, "w").close()
+
+    def other_process_finishes():
+        time.sleep(1.5)
+        open(exe, "wb").write(b"MZ")
+        os.remove(lock)
+    threading.Thread(target=other_process_finishes).start()
+    t0 = time.time()
+    assert fastdl.fetch_tool("faketool") == exe and time.time() - t0 >= 1.4, "must wait for the other fetch"
+    assert not os.path.exists(lock), "no lock left behind"
 fastdl.TOOLS.clear(); fastdl.TOOLS.update(real_tools); fastdl.TOOLS_DIR = real_dir
 assert all(len(v[1]) == 64 or v[1].startswith("https://") for v in fastdl.TOOLS.values())
+
+# WebView2 check: same answer pywebview gets from the registry (it silently picks an engine that can't draw the UI otherwise)
+import winreg
+def _pywebview_says():
+    from webview.platforms import winforms
+    return winforms._is_chromium()
+assert fastdl.webview2_installed() == _pywebview_says(), "FastDL's check must agree with pywebview's"
+real_open = winreg.OpenKey
+winreg.OpenKey = lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError())  # a clean Windows: no key anywhere
+try:
+    assert fastdl.webview2_installed() is False, "no registry key must mean not installed"
+finally:
+    winreg.OpenKey = real_open
 
 print("all good")
