@@ -4,6 +4,13 @@ const action = ext.action ?? ext.browserAction; // Firefox's extension is Manife
 const mem = {}; // Firefox keeps this page alive and may lack storage.session
 const session = ext.storage.session ?? { get: async k => ({ [k]: mem[k] }), set: async o => void Object.assign(mem, o), remove: async k => void delete mem[k] };
 
+// The Chrome Web Store / Edge Add-ons edition (store.py sets STORE to true): the stores don't allow extensions that help
+// download YouTube videos, so that edition ignores YouTube pages entirely (its manifest also keeps the video button off them).
+// The extension you load from FastDL's install folder has no such limit.
+const STORE = false;
+const NO_VIDEO_SITES = /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com|googlevideo\.com)$/i;
+const blocked = url => { try { return STORE && NO_VIDEO_SITES.test(new URL(url).hostname); } catch { return false; } };
+
 const API = "http://127.0.0.1:9614/api";
 const MANIFEST_URL = /\.(m3u8|mpd)(\?|$)/i;
 const MANIFEST_TYPE = /mpegurl|dash\+xml/i;
@@ -131,6 +138,7 @@ const HANDLERS = {
 ext.runtime.onMessage.addListener((msg, sender, reply) => {
   const handle = HANDLERS[msg.type];
   if (!handle || !sender.tab) return;
+  if (blocked(msg.pageUrl) || blocked(sender.tab.url)) { reply(false); return; }
   handle(msg, sender.tab).then(reply, () => reply(false)); // false = FastDL not running
   return true; // reply asynchronously
 });
@@ -173,7 +181,7 @@ ext.webRequest.onBeforeSendHeaders.addListener(d => {
 
 ext.downloads.onCreated.addListener(async item => {
   const url = item.finalUrl || item.url;
-  if (!/^https?:/.test(url) || item.state !== "in_progress") return;
+  if (!/^https?:/.test(url) || item.state !== "in_progress" || blocked(url)) return;
   // Options > "Leave to the browser": these types / small files stay a normal browser download
   const o = await browserOptions();
   const name = (item.filename || new URL(url).pathname).split(/[\\/]/).pop();
@@ -209,7 +217,7 @@ ext.downloads.onCreated.addListener(async item => {
 
 // Toolbar button: grab the video on the current page.
 action.onClicked.addListener(tab =>
-  grab(tab, tab.url).then(badge, () => badge(false)));
+  blocked(tab.url) ? badge(false) : grab(tab, tab.url).then(badge, () => badge(false)));
 
 ext.runtime.onInstalled.addListener(() => {
   ext.contextMenus.create({ id: "link", title: "Download with FastDL", contexts: ["link", "video", "audio", "image"] });
@@ -218,6 +226,7 @@ ext.runtime.onInstalled.addListener(() => {
 
 ext.contextMenus.onClicked.addListener((info, tab) => {
   const done = p => p.then(badge, () => badge(false));
+  if ([tab?.url, info.pageUrl, info.frameUrl, info.linkUrl, info.srcUrl].some(blocked)) return badge(false);
   if (info.mediaType === "video" || info.menuItemId === "page") return done(grab(tab, info.frameUrl || info.pageUrl, info.srcUrl));
   done(send(info.linkUrl || info.srcUrl, tab?.url));
 });

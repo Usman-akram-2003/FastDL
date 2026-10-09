@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastDL privacy policy</title>
+<meta name="description" content="What the FastDL app and its browser extension do with your data: nothing leaves your PC.">
+<link rel="icon" href="img/favicon.png">
+<style>
+  :root { --bg: #ffffff; --alt: #f5f7fa; --fg: #1d2127; --muted: #5a6270; --line: #dde1e7; --accent: #1f5fd6; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #14161a; --alt: #1a1d22; --fg: #e8eaed; --muted: #9aa1ac; --line: #30343b; --accent: #4d8bf5; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.65 system-ui, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; margin: 8px 0 4px; }
+  h2 { font-size: 20px; margin: 32px 0 8px; }
+  .muted { color: var(--muted); }
+  ul { padding-left: 22px; } li { margin: 6px 0; }
+  code { background: var(--alt); border: 1px solid var(--line); padding: 1px 6px; border-radius: 4px; font-size: .9em; }
+  .box { background: var(--alt); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; }
+</style>
+</head>
+<body>
+<main>
+  <p><a href="./">&larr; FastDL</a></p>
+  <h1>Privacy policy</h1>
+  <p class="muted">For the FastDL app for Windows and the FastDL Download Manager browser extension. Last updated: 9 October 2026.</p>
+
+  <div class="box"><b>In short:</b> everything FastDL and its extension do happens on your own computer. We don't collect, receive, store, sell or share any information about you, and there are no accounts, ads, analytics or tracking.</div>
+
+  <h2>What the browser extension handles</h2>
+  <p>The extension exists to hand downloads and page videos to the FastDL app on your PC. For that it uses:</p>
+  <ul>
+    <li>the address of a file or page you download, and the page it came from;</li>
+    <li>the cookies your browser would send to that site, and your browser's user-agent text, so files that need you to be signed in can be downloaded;</li>
+    <li>the title of the page and the addresses of video streams the page loads, so a video can be found and named;</li>
+    <li>for downloads that start from a form button, the form data your browser sent with that click, so the app can repeat it.</li>
+  </ul>
+  <p><b>All of this is sent only to the FastDL app running on your own computer</b> (the local address <code>127.0.0.1</code>). The extension makes no other network requests. It sends nothing to the developer or to any other server, and it runs no code downloaded from the internet.</p>
+  <p>The extension keeps a short list of recently seen video stream addresses for each open tab, in the browser's temporary session storage; it is cleared when the page changes or the browser closes. It reads FastDL's own settings from the local app. It stores nothing else.</p>
+
+  <h2>What the FastDL app does</h2>
+  <ul>
+    <li>It downloads the files, videos and torrents you ask for, from the sites and peers you point it at. Those sites see your internet address, as with any download.</li>
+    <li>It keeps its download list and settings in a folder on your PC (<code>.fastdl</code> in your user folder). This can include the cookies needed to resume a signed-in download. It never leaves your PC.</li>
+    <li>It checks GitHub once a day for a new version of itself. That request shows GitHub your internet address, like any web request, and nothing else.</li>
+    <li>If you use the Options proxy, requests go through the proxy you chose.</li>
+  </ul>
+
+  <h2>What we don't do</h2>
+  <ul>
+    <li>We don't sell or transfer user data to third parties.</li>
+    <li>We don't use or transfer data for purposes unrelated to downloading what you asked for.</li>
+    <li>We don't use data to decide creditworthiness or for lending.</li>
+  </ul>
+
+  <h2>Your control</h2>
+  <p>Remove the extension in your browser and uninstall FastDL from Windows to stop everything. Delete the <code>.fastdl</code> folder in your user folder to erase the app's saved list and settings.</p>
+
+  <h2>Changes and contact</h2>
+  <p>If this policy changes, the new version will be posted on this page with a new date. Questions: open an issue at <a href="https://github.com/Usman-akram-2003/FastDL/issues">github.com/Usman-akram-2003/FastDL/issues</a>. FastDL is open source (MIT), so you can read exactly what it does.</p>
+</main>
+</body>
+</html>

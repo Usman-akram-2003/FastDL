@@ -1609,7 +1609,10 @@ UI_FILE = os.path.join(sys._MEIPASS if FROZEN else os.path.dirname(os.path.abspa
 
 
 NATIVE_HOST = "com.fastdl.launcher"
-EXTENSION_ID = "ncandpkokkmoafpomjemanhficndppjf"  # pinned by the "key" in extension/manifest.json
+EXTENSION_IDS = (
+    "ncandpkokkmoafpomjemanhficndppjf",  # the extension loaded from the install folder: pinned by the "key" in extension/manifest.json
+    # the Chrome Web Store and Edge Add-ons give their own listing a different ID: add each one here once it exists
+)
 BROWSERS = (r"Software\Google\Chrome", r"Software\Microsoft\Edge", r"Software\BraveSoftware\Brave-Browser")
 FIREFOX_ID = "fastdl@usman-akram-2003.github.io"  # the Firefox extension's id (build.py puts it in its manifest)
 
@@ -1698,7 +1701,7 @@ def register_launcher():
         f.write(f"@echo off\npowershell -NoProfile -WindowStyle Hidden -EncodedCommand {encoded} >nul 2>&1\n")
     with open(manifest, "w") as f:
         json.dump({"name": NATIVE_HOST, "description": "Starts FastDL", "path": bat, "type": "stdio",
-                   "allowed_origins": [f"chrome-extension://{EXTENSION_ID}/"]}, f, indent=2)
+                   "allowed_origins": [f"chrome-extension://{i}/" for i in EXTENSION_IDS]}, f, indent=2)
     firefox = os.path.join(HOME, "native-host-firefox.json")  # Firefox names extensions by id, not origin
     with open(firefox, "w") as f:
         json.dump({"name": NATIVE_HOST, "description": "Starts FastDL", "path": bat, "type": "stdio",

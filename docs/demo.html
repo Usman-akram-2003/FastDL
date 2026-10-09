@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FastDL test page</title>
+<style>
+  body { font: 16px/1.6 system-ui, "Segoe UI", sans-serif; max-width: 720px; margin: 32px auto; padding: 0 16px; background: #fff; color: #1d2127; }
+  video { width: 100%; border-radius: 8px; background: #000; }
+  @media (prefers-color-scheme: dark) { body { background: #14161a; color: #e8eaed; } a { color: #4d8bf5; } }
+</style>
+</head>
+<body>
+<h1>FastDL test page</h1>
+<p>For trying the FastDL browser extension. You need the <a href="./">FastDL app</a> installed first.</p>
+<h2>1. A video</h2>
+<p>Hover the video: a "Download this video" bar appears at its top right.</p>
+<video src="demo/sample.mp4" controls muted loop autoplay playsinline></video>
+<h2>2. A file</h2>
+<p>Click this link: the browser's download is handed to FastDL, which asks where to save it:
+<a href="demo/sample.zip" download>sample.zip</a> (a tiny text file).</p>
+</body>
+</html>
