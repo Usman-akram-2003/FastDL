@@ -32,7 +32,7 @@
 2. Keep *Install ffmpeg, aria2 and Deno* ticked (about 150 MB): they're needed for videos and torrents. FastDL uses winget if you have it, otherwise downloads them from their official release pages and checks their checksums.
 3. Windows may say *"Windows protected your PC"* because FastDL isn't code-signed yet: click **More info → Run anyway**.
 
-Prefer a command line? With [Scoop](https://scoop.sh): `scoop bucket add fastdl https://github.com/Usman-akram-2003/FastDL`, then `scoop install fastdl` (no Windows warning, because Scoop downloads the installer itself).
+Prefer a command line? With [Scoop](https://scoop.sh): `scoop bucket add fastdl https://github.com/Usman-akram-2003/FastDL`, then `scoop install fastdl`. (Windows' "protected your PC" screen can still appear: it is about the installer being unsigned, not about how it was downloaded.)
 
 ### Browser button (Chrome, Edge, Brave)
 
@@ -73,7 +73,7 @@ Installed copies find the update within a day.
 
 ## Code signing policy
 
-FastDL's installer is **not code-signed yet**, so Windows may show "Windows protected your PC" (click *More info → Run anyway*, or install with winget or Scoop). The release build is prepared for free code signing from [SignPath.io](https://signpath.io) (certificate by SignPath Foundation) and will sign the installer automatically once SignPath approves the project; this section will then name the team and the signing steps. How a release is built: [`.github/workflows/release.yml`](.github/workflows/release.yml), from the code in this repository.
+FastDL's installer is **not code-signed yet**, so Windows may show "Windows protected your PC" (click *More info → Run anyway*; installing with winget or Scoop doesn't avoid it). The release build is prepared for free code signing from [SignPath.io](https://signpath.io) (certificate by SignPath Foundation) and will sign the installer automatically once SignPath approves the project; this section will then name the team and the signing steps. How a release is built: [`.github/workflows/release.yml`](.github/workflows/release.yml), from the code in this repository.
 
 - **Team:** one maintainer, [Usman-akram-2003](https://github.com/Usman-akram-2003), who writes, reviews and approves releases.
 - **Privacy:** FastDL runs on your PC only. It talks to the sites you download from, and to GitHub to look for updates and, for torrents, to fetch a public tracker list (which, like any web request, shows GitHub your IP address). Torrents connect to trackers and to the other people sharing the file. Nothing else is sent anywhere.
