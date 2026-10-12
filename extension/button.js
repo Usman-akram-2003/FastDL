@@ -121,11 +121,20 @@
     }
   }
 
-  // elementsFromPoint sees videos under player overlays, and keeps the video found while over our bar
-  // ponytail: videos inside closed shadow roots aren't found; toolbar button still works there
+  // elementsFromPoint sees videos under player overlays, and keeps the video found while over our bar. Many players put their
+  // <video> inside a web component's shadow root: look in every open one under the pointer too.
+  // ponytail: closed shadow roots can't be searched; the toolbar button still works there
+  const videoAt = (x, y, root = document) => {
+    for (const el of root.elementsFromPoint(x, y)) {
+      if (el.tagName === "VIDEO") return el;
+      const inner = el.shadowRoot && videoAt(x, y, el.shadowRoot);
+      if (inner) return inner;
+    }
+    return null;
+  };
   document.addEventListener("pointermove", e => {
     if (menuOpen || dlgOpen) return; // stay put while the user picks
-    const v = document.elementsFromPoint(e.clientX, e.clientY).find(el => el.tagName === "VIDEO");
+    const v = videoAt(e.clientX, e.clientY);
     if (v && !hidden.has(v) && v.offsetWidth > 160 && v.offsetHeight > 90) {
       clearTimeout(hideTimer);
       hideTimer = null;

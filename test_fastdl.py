@@ -850,4 +850,100 @@ with tempfile.TemporaryDirectory() as tdir:
     open(prv, "wb").write(b"d4:infod6:lengthi1e4:name1:a7:privatei1eee")
     assert not fastdl.is_private(pub) and fastdl.is_private(prv) and fastdl.is_private(os.path.join(tdir, "missing"))
 
+# ---- more sites, fewer walls ----
+# a download link that expires mid-download: the page it came from lists the new one (a token in the address changes per visit)
+class PG(BaseHTTPRequestHandler):
+    def do_GET(self):
+        t = allowed["token"]
+        body = (f'<html><a href="{base}/exp/{t}/file.bin">get it</a> <a href="{base}/exp/{t}/other.zip">other</a>'
+                f'<a href="{base}/exp/{t}/file.pdf">pdf</a></html>').encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+pgsrv = ThreadingHTTPServer(("127.0.0.1", 0), PG)
+threading.Thread(target=pgsrv.serve_forever, daemon=True).start()
+page_url = f"http://127.0.0.1:{pgsrv.server_port}/downloads"
+with tempfile.TemporaryDirectory() as d:
+    allowed["token"] = "t1"
+    pd = Download(f"{base}/exp/t1/file.bin", d, {"Referer": page_url})
+    pth = threading.Thread(target=pd.run)
+    pth.start()
+    while pd.done < 400_000 and pth.is_alive():
+        time.sleep(0.05)
+    allowed["token"] = "t2"  # the old link dies; the page now lists /exp/t2/...
+    pth.join(90)
+    assert pd.status == "done" and "/exp/t2/" in pd.url, (pd.status, pd.error, pd.url)
+    assert read(pd.dest) == DATA, "continued on the fresh link, byte-exact"
+allowed["token"] = "old"
+
+# a stream playlist (HLS) lists its own qualities, like a known site; a plain page has the single entry
+class HL(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = (b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"\nv720.m3u8\n'
+                b'#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=854x480,CODECS="avc1.64001e,mp4a.40.2"\nv480.m3u8\n'
+                b'#EXT-X-STREAM-INF:BANDWIDTH=600000,RESOLUTION=640x360,CODECS="avc1.64001e,mp4a.40.2"\nv360.m3u8\n')
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+hlsrv = ThreadingHTTPServer(("127.0.0.1", 0), HL)
+threading.Thread(target=hlsrv.serve_forever, daemon=True).start()
+menu = fastdl.formats("http://127.0.0.1:1/watch", {"Cookie": "never=forwarded"},
+                      [{"url": f"http://127.0.0.1:{hlsrv.server_port}/master.m3u8", "manifest": True}], "Demo")
+labels = [i["label"] for i in menu["items"]]
+assert any("720p" in l for l in labels) and any("480p" in l for l in labels) and any("360p" in l for l in labels), labels
+assert fastdl.formats("http://127.0.0.1:1/watch", {}, [{"url": "http://127.0.0.1:1/v.mp4", "manifest": False}], "Demo")["items"][0]["label"] == "Detected video stream"
+
+# Options > use my browser's login: yt-dlp gets the cookies; a cookies.txt file wins; junk is ignored
+fastdl.settings(cookies_browser="firefox", cookies_file="")
+assert fastdl.ytdlp_auth() == {"cookiesfrombrowser": ("firefox",)}
+with tempfile.TemporaryDirectory() as ck:
+    cf = os.path.join(ck, "cookies.txt")
+    open(cf, "w").write("# Netscape HTTP Cookie File\n")
+    fastdl.settings(cookies_file=cf)
+    assert fastdl.ytdlp_auth() == {"cookiefile": cf}
+    fastdl.settings(cookies_browser="netscape", cookies_file=os.path.join(ck, "missing.txt"))
+    assert fastdl.ytdlp_auth() == {}
+fastdl.settings(cookies_browser="", cookies_file="")
+assert "DRM" in fastdl.friendly_error(Exception("ERROR: [x] This video is DRM protected")) and "can't download" in fastdl.friendly_error(Exception("This video is DRM protected"))
+assert "Firefox" in fastdl.friendly_error(Exception("ERROR: [youtube] x: Sign in to confirm you're not a bot. Use --cookies-from-browser"))
+assert "browser's login" in fastdl.friendly_error(Exception("Could not copy Chrome cookie database"))
+
+# the Options window's values are checked before they are saved
+import json as _json
+api3 = fastdl.Server(("127.0.0.1", 0), fastdl.API)
+threading.Thread(target=api3.serve_forever, daemon=True).start()
+real_port = fastdl.PORT
+fastdl.PORT = api3.server_port
+
+
+def post_settings(body):
+    req = urllib.request.Request(f"http://127.0.0.1:{fastdl.PORT}/api/settings", _json.dumps(body).encode(),
+                                 {"X-FastDL": "1", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+assert post_settings({"cookies_browser": "netscape"}) == 400
+assert post_settings({"cookies_file": "C:/definitely/not/here/cookies.txt"}) == 400
+assert post_settings({"cookies_browser": "firefox"}) == 200 and fastdl.options()["cookies_browser"] == "firefox"
+assert post_settings({"cookies_browser": ""}) == 200 and fastdl.options()["cookies_browser"] == ""
+fastdl.PORT = real_port
+
 print("all good")

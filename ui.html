@@ -393,6 +393,10 @@
           <input type="number" id="oLimit" min="0" step="50"></label>
         <label class="field"><span>Proxy (empty = Windows' settings, none = no proxy, or http://host:port, http://user:pass@host:port)</span>
           <input id="oProxy" spellcheck="false" autocomplete="off" placeholder="empty: use Windows' proxy settings"></label>
+        <div class="field"><label for="oCookieBrowser">Video sites: use my browser's login (fixes "sign in to confirm you're not a robot")</label>
+          <div class="row"><select id="oCookieBrowser"><option value="">Don't use my browser's login</option><option value="firefox">Firefox (works best)</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="brave">Brave</option></select>
+          <input id="oCookieFile" spellcheck="false" autocomplete="off" placeholder="or a cookies.txt file (full path)" aria-label="cookies.txt file"></div>
+          <small class="muted">Close Chrome, Edge or Brave first: they lock their cookies while they are open.</small></div>
         <label class="chk"><input type="checkbox" id="oMulti"> Use all internet connections at once (Wi-Fi + Ethernet + phone tethering)</label>
         <label class="chk"><input type="checkbox" id="oAuto"> Start FastDL with Windows</label>
         <label class="chk"><input type="checkbox" id="oCloseDone"> Close a download's window 10 seconds after it finishes</label>
@@ -989,6 +993,7 @@ $("bOptions").onclick = async () => {
   $("oMulti").checked = o.multilink; $("oAuto").checked = o.autostart; $("oAsk").checked = o.ask_browser;
   $("oSkipMb").value = o.skip_smaller_mb; $("oSkipTypes").value = o.skip_types; $("optErr").textContent = "";
   $("oCloseDone").checked = o.close_done; $("oProxy").value = o.proxy;
+  $("oCookieBrowser").value = o.cookies_browser; $("oCookieFile").value = o.cookies_file;
   $("oUpdUrl").value = o.update_url; $("oVersion").textContent = `This is FastDL ${o.version}.`; $("oUpdMsg").textContent = "";
   $("opt").showModal();
 };
@@ -1011,7 +1016,8 @@ $("optForm").addEventListener("submit", async e => {
     conns: +$("oConns").value, max_active: +$("oActive").value, folder: $("oFolder").value.trim(),
     global_limit: Math.max(0, +$("oLimit").value || 0) * 1024, multilink: $("oMulti").checked, autostart: $("oAuto").checked,
     ask_browser: $("oAsk").checked, skip_smaller_mb: +$("oSkipMb").value || 0, skip_types: $("oSkipTypes").value,
-    close_done: $("oCloseDone").checked, proxy: $("oProxy").value.trim(), update_url: $("oUpdUrl").value.trim() });
+    close_done: $("oCloseDone").checked, proxy: $("oProxy").value.trim(),
+    cookies_browser: $("oCookieBrowser").value, cookies_file: $("oCookieFile").value.trim(), update_url: $("oUpdUrl").value.trim() });
   if (!r.ok) { $("optErr").textContent = (await r.json()).error; return; }
   $("opt").close(); refresh();
 });

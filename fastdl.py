@@ -70,7 +70,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.10"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.11"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -339,10 +339,34 @@ def link_expired(e):
     return code in (403, 410)
 
 
+COOKIE_BROWSERS = ("firefox", "chrome", "edge", "brave")
+
+
+def ytdlp_auth():
+    """Options > "Use my browser's login": yt-dlp reads that browser's cookies (or a cookies.txt file), so a site that asks
+    to "sign in to prove you're not a robot" sees the user's own account. Firefox works reliably; Chrome, Edge and Brave
+    lock their cookie file while open and encrypt it in ways that sometimes can't be read."""
+    s = settings()
+    if s.get("cookies_file") and os.path.isfile(s["cookies_file"]):
+        return {"cookiefile": s["cookies_file"]}
+    if s.get("cookies_browser") in COOKIE_BROWSERS:
+        return {"cookiesfrombrowser": (s["cookies_browser"],)}
+    return {}
+
+
 def friendly_error(e):
     """Plain words instead of '<urlopen error [WinError 10060] A connection attempt failed because ...'."""
     reason = getattr(e, "reason", e)
     text = str(e) or type(e).__name__
+    if re.search(r"\bDRM\b", text):  # encrypted streams (Widevine, FairPlay ...): FastDL doesn't get around DRM
+        return ("This video is protected by DRM, so FastDL can't download it. Many services offer an official "
+                "offline option in their own app.")
+    if "confirm you" in text and "bot" in text or "Sign in to confirm" in text:
+        return ("The site wants you to sign in to prove you're not a robot. In Options, choose "
+                "\"Use my browser's login\" (Firefox works best), then try again.")
+    if re.search(r"cookie.*(database|DPAPI|decrypt)|(could not|failed to) (copy|decrypt)", text, re.I):
+        return ("FastDL couldn't read your browser's login. Close that browser and try again, pick Firefox in Options, "
+                "or give Options a cookies.txt file.")
     code = getattr(e, "code", None)
     if not isinstance(code, int):  # yt-dlp reports it as text: "Unable to download webpage: HTTP Error 403: Forbidden"
         m = re.search(r"HTTP Error (\d{3})", text)
@@ -519,7 +543,10 @@ class Download:
                 break
             except Exception as e:
                 if attempt == 0 and link_expired(e) and not self.stop.is_set() and self._refresh_link():
-                    continue  # fresh link for the same file: carry on where it stopped
+                    # fresh link for the same file: carry on where it stopped. The errors were about the old link: left in
+                    # the list they made the retry start no connection at all and fail again with the same error
+                    self.errors, self.conns, self._throttled = [], self.max_conns or self.conns, 0
+                    continue
                 self.status, self.error = "error", friendly_error(e)
                 if link_expired(e) and type(self) is Download and not self.post:  # a refused form isn't an old link
                     self.expired = True
@@ -529,14 +556,46 @@ class Download:
         self.phase, self.active = "", 0
 
     def _refresh_link(self):
-        """Link expired: ask the page (yt-dlp knows ~1800 video sites, e.g. OK.ru) for a fresh link to the
-        *same* file, recognised by its size. Videos (Video class) already re-read their page by themselves."""
-        if type(self) is not Download or self.post or not self.page or not self.size or not is_video_site(self.page):
+        """Link expired: ask the page for a fresh link to the *same* file, recognised by its size. A video site
+        (yt-dlp knows ~1800, e.g. OK.ru) through yt-dlp; any other page by reading its links again (download links with
+        a token in the address change on every visit). Videos (Video class) already re-read their page by themselves."""
+        if type(self) is not Download or self.post or not self.page or not self.size:
             return False
         self.phase = "Link expired: getting a fresh one from the page..."
         try:
+            return self._fresh_from_video_site() if is_video_site(self.page) else self._fresh_from_page()
+        finally:
+            self.phase = ""
+
+    def _fresh_from_page(self):
+        try:
+            found = grab_links(self.page, {k: v for k, v in self.given.items() if k in ("Cookie", "User-Agent", "Referer")})
+        except Exception as e:
+            print("refresh link (page):", e)
+            return False
+        ext = os.path.splitext(self.name or "")[1].lower().lstrip(".")
+        cands = [l for l in found if l["ext"] == ext and l["url"] != self.url][:20]
+        cands.sort(key=lambda l: l["name"] != self.name)  # the same file name first
+
+        def size_of(l):
+            try:
+                return probe(l["url"], {**UA, **self.given})[2]
+            except Exception:
+                return None
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            sizes = list(pool.map(size_of, cands))
+        for l, size in zip(cands, sizes):
+            if size == self.size:
+                self.url, self.headers = l["url"], {**UA, **self.given}
+                return True
+        return False
+
+    def _fresh_from_video_site(self):
+        try:
             import yt_dlp
-            with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "http_headers": self.given}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "http_headers": self.given, **ytdlp_auth()}) as ydl:
                 info = ydl.extract_info(self.page, download=False)
             for f in sorted(info.get("formats") or [info], key=lambda f: -(f.get("height") or 0)):
                 if f.get("protocol") not in ("http", "https") or not f.get("url"):
@@ -882,7 +941,7 @@ class Video(Download):
             "ffmpeg_location": find_tool("ffmpeg"),  # winget's ffmpeg even when PATH lacks it
             # watch?v=X&list=Y means "this video" (IDM does the same); without it a YouTube Mix (list=RD...)
             # is an endless playlist and the download sat at 0 B. Pure playlist links still download all.
-            "noplaylist": True,
+            "noplaylist": True, **ytdlp_auth(),
             "concurrent_fragment_downloads": 16,  # HLS/DASH pieces at once (the last ones were crawling in, 8 at a time)
             "socket_timeout": 15, "retries": 5, "fragment_retries": 10,  # a stalled piece is retried in 15 s, not 20 x 3
             "ratelimit": self.limit or None,  # HLS/playlist path only; ponytail: fixed at start, the fast path follows changes live
@@ -1364,16 +1423,35 @@ def formats(url, headers=None, streams=(), title=None):
     result = {"title": title or "", "folder": DEFAULT_FOLDER, "items": []}
     if not is_video_site(url) and streams:  # a page yt-dlp doesn't know, but the extension saw it play
         result["items"] = [{"format": None, "label": "Detected video stream", "size": None, "ext": "mp4"}]
+        if streams[0].get("manifest"):  # an HLS/DASH playlist lists its own qualities: offer them like a known site's
+            try:
+                import yt_dlp
+                hdr = {k: v for k, v in (headers or {}).items() if k != "Cookie"}  # the page's cookies are not for the CDN
+                with yt_dlp.YoutubeDL({"quiet": True, "http_headers": hdr, **ytdlp_auth()}) as ydl:
+                    info = ydl.extract_info(streams[0]["url"], download=False)
+                found = quality_items(info)
+                if len(found) > 1 or (found and found[0]["format"]):
+                    result["items"] = found
+            except Exception as e:  # the playlist is DRM-protected, or not readable: keep the single entry, say why when it's DRM
+                if re.search(r"DRM", str(e)):
+                    result["error"] = friendly_error(e)
         return result
     try:
         import yt_dlp
-        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "http_headers": headers or {}}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "http_headers": headers or {}, **ytdlp_auth()}) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
-        result["error"] = str(e).replace("ERROR: ", "")[:300]
+        result["error"] = friendly_error(e)[:300]
         result["items"] = [{"format": None, "label": "Best quality", "size": None, "ext": "mp4"}]
         return result
     result["title"] = info.get("title") or result["title"]
+    result["items"] = quality_items(info) + subtitle_items(info)
+    return result
+
+
+def quality_items(info):
+    """One menu entry per resolution of a yt-dlp result (best stream for each, audio matched), plus audio only."""
+    items = []
     fs = info.get("formats") or [info]
     size = lambda f: f.get("filesize") or f.get("filesize_approx") or 0
     audio = [f for f in fs if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
@@ -1393,16 +1471,15 @@ def formats(url, headers=None, streams=(), title=None):
             ext = "mp4" if (v["ext"], a["ext"]) == ("mp4", "m4a") else "webm" if v["ext"] == a["ext"] == "webm" else "mkv"
         else:
             sel, total, ext = v["format_id"], size(v), v["ext"]
-        result["items"].append({"format": sel, "size": total or None, "ext": ext,
-                                "label": f"{ext.upper()} file, quality {h}p" + (" HD" if h >= 720 else "")})
+        items.append({"format": sel, "size": total or None, "ext": ext,
+                      "label": f"{ext.upper()} file, quality {h}p" + (" HD" if h >= 720 else "")})
     if audio:
         a = max(audio, key=lambda f: f.get("abr") or 0)
-        result["items"].append({"format": a["format_id"], "size": size(a) or None, "ext": a["ext"],
-                                "label": f"{a['ext'].upper()} audio only, {round(a.get('abr') or 0)} kbps"})
-    if not result["items"]:
-        result["items"] = [{"format": None, "label": "Best quality", "size": None, "ext": info.get("ext") or "mp4"}]
-    result["items"] += subtitle_items(info)
-    return result
+        items.append({"format": a["format_id"], "size": size(a) or None, "ext": a["ext"],
+                      "label": f"{a['ext'].upper()} audio only, {round(a.get('abr') or 0)} kbps"})
+    if not items:
+        items = [{"format": None, "label": "Best quality", "size": None, "ext": info.get("ext") or "mp4"}]
+    return items
 
 
 def subtitle_items(info):
@@ -1814,7 +1891,7 @@ M = Manager()
 
 OPTIONS_DEFAULT = {"conns": 8, "max_active": 3, "folder": "", "global_limit": 0, "multilink": True,
                    "ask_browser": True, "skip_smaller_mb": 0, "skip_types": "jpg jpeg png gif webp svg ico bmp",
-                   "close_done": True, "proxy": ""}
+                   "close_done": True, "proxy": "", "cookies_browser": "", "cookies_file": ""}
 
 
 def options():
@@ -2287,6 +2364,13 @@ class API(BaseHTTPRequestHandler):
             if not proxy_ok(proxy):
                 return self.send(400, {"error": "Proxy: leave it empty, type none, or give it like http://127.0.0.1:8080"})
             new["proxy"] = proxy
+            browser = str(body.get("cookies_browser", o["cookies_browser"]) or "").strip().lower()
+            if browser and browser not in COOKIE_BROWSERS:
+                return self.send(400, {"error": "Browser login: choose Firefox, Chrome, Edge or Brave"})
+            cfile = str(body.get("cookies_file", o["cookies_file"]) or "").strip().strip('"')
+            if cfile and not os.path.isfile(cfile):
+                return self.send(400, {"error": "The cookies file wasn't found: give its full path, like C:/Users/you/cookies.txt"})
+            new["cookies_browser"], new["cookies_file"] = browser, cfile
             new["skip_types"] = " ".join(re.findall(r"[a-z0-9]{1,8}", str(body.get("skip_types", o["skip_types"])).lower()))
             for k in ("multilink", "ask_browser", "close_done"):
                 new[k] = bool(body.get(k, o[k]))
