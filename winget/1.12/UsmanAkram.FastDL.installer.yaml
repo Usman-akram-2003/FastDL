@@ -13,6 +13,6 @@ ReleaseDate: 2026-10-28
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/Usman-akram-2003/FastDL/releases/download/v1.12/FastDL-Setup.exe
-  InstallerSha256: 93445EE6E21162D40D8F8F3BD8D480A94ED49570679152185C63C6E365DEB9A9
+  InstallerSha256: 6B9FA4C7A7BBB16BCFFD508E429A16529974FE607187CA0B7256765297910709
 ManifestType: installer
 ManifestVersion: 1.12.0

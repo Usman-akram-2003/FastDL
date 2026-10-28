@@ -4,7 +4,7 @@
   "homepage": "https://usman-akram-2003.github.io/FastDL/",
   "license": "MIT",
   "url": "https://github.com/Usman-akram-2003/FastDL/releases/download/v1.12/FastDL-Setup.exe",
-  "hash": "93445ee6e21162d40d8f8f3bd8d480a94ed49570679152185c63c6e365deb9a9",
+  "hash": "6b9fa4c7a7bbb16bcffd508e429a16529974fe607187ca0b7256765297910709",
   "installer": {
     "script": "Start-Process -FilePath \"$dir\\FastDL-Setup.exe\" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait"
   },
