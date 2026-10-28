@@ -946,4 +946,27 @@ assert post_settings({"cookies_browser": "firefox"}) == 200 and fastdl.options()
 assert post_settings({"cookies_browser": ""}) == 200 and fastdl.options()["cookies_browser"] == ""
 fastdl.PORT = real_port
 
+# ---- improvements verification ----
+# 1. Manager thread-safe snapshot methods
+tm = fastdl.Manager()
+td = tm.add(f"{base}/file.bin", tempfile.gettempdir(), {}, later=True)
+assert tm.get(td.id) is td
+assert tm.contains(td.id)
+assert td in tm.all()
+assert tm.get("nonexistent") is None
+assert not tm.contains("nonexistent")
+
+# 2. find_free_port detects preferred and ephemeral ports
+port_avail = fastdl.find_free_port(6899)
+assert isinstance(port_avail, int) and port_avail > 0
+
+# 3. Disk space pre-check
+d_space = fastdl.Download(f"{base}/file.bin", tempfile.gettempdir())
+try:
+    d_space._check_space(10**18)  # 1 Exabyte
+    assert False, "should raise IOError for 1 EB required space"
+except IOError as e:
+    assert "Not enough disk space" in str(e)
+
 print("all good")
+

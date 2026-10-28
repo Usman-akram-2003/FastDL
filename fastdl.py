@@ -70,7 +70,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.11"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.12"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -85,6 +85,15 @@ UA = {"User-Agent": "Mozilla/5.0 FastDL"}
 _real_create_connection = socket.create_connection
 
 
+def _tune_socket(s):
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 18)
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    return s
+
+
 def fast_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **kw):
     """socket.create_connection that doesn't sit for minutes on a dead address. A site usually has several (IPv6 and
     IPv4, or a few servers) and the standard function tries them one after another, each for the whole timeout: one dead
@@ -94,12 +103,12 @@ def fast_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address
     try:
         infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
     except socket.gaierror:
-        return _real_create_connection(address, timeout, source_address, **kw)  # the same error as ever
+        return _tune_socket(_real_create_connection(address, timeout, source_address, **kw))  # the same error as ever
     if source_address:  # bound to one internet link: only addresses of its family can work
         v6 = ":" in source_address[0]
         infos = [i for i in infos if (i[0] == socket.AF_INET6) == v6]
     if len(infos) <= 1:
-        return _real_create_connection(address, timeout, source_address, **kw)
+        return _tune_socket(_real_create_connection(address, timeout, source_address, **kw))
     families = {}
     for i in infos:
         families.setdefault(i[0], []).append(i)
@@ -139,7 +148,7 @@ def fast_connect(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address
         if isinstance(got, socket.socket):
             done.set()
             got.settimeout(socket.getdefaulttimeout() if default else timeout)
-            return got
+            return _tune_socket(got)
         error = got
         if started == len(order) and pending == 0:
             raise error
@@ -149,11 +158,12 @@ socket.create_connection = fast_connect  # http.client (so urllib), and everythi
 
 
 RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+_CLEAN_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 def clean(name):
     """Safe Windows filename."""
-    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name or "").strip(". ")[:150]
+    name = _CLEAN_RE.sub("_", name or "").strip(". ")[:150]
     if name.split(".")[0].rstrip().upper() in RESERVED:  # "nul.zip" would be written to the NUL device and vanish
         name = "_" + name
     return name
@@ -207,15 +217,22 @@ def links():
     global _links
     if time.time() - _links[0] < 30:
         return _links[1]
+    ips = []
     try:
-        ips = [ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith(("127.", "169.254."))]
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            ip = info[4][0].split("%")[0]
+            if ip.startswith(("127.", "169.254.", "::1", "fe80:")):
+                continue
+            if ip not in ips:
+                ips.append(ip)
     except OSError:
-        ips = []
+        pass
     ok = []
 
     def check(ip):
         try:
-            with socket.create_connection(("1.1.1.1", 443), timeout=2, source_address=(ip, 0)):
+            target = ("2606:4700:4700::1111", 443) if ":" in ip else ("1.1.1.1", 443)
+            with socket.create_connection(target, timeout=2, source_address=(ip, 0)):
                 ok.append(ip)
         except OSError:
             pass
@@ -501,8 +518,11 @@ class Download:
     def _read_size(self):
         """Chunk to read next. Under a limit: small chunks, booked *before* reading, so 8 connections
         don't burst 2 MB at the start (the limiter showed 900 KB/s at a 500 KB/s limit)."""
-        L = min([x for x in (self.limiter.limit, GLOBAL.limit) if x] or [0])
-        n = CHUNK if not L else max(8192, min(CHUNK, L // 4))
+        lim, glim = self.limiter.limit, GLOBAL.limit
+        if not lim and not glim:
+            return CHUNK
+        L = min(lim, glim) if (lim and glim) else (lim or glim)
+        n = max(8192, min(CHUNK, L // 4))
         self._limit(n)
         return n
 
@@ -520,19 +540,22 @@ class Download:
             t0, b0 = self._samples[0]
             if now - t0 >= 0.5:
                 self.speed = (self.done - b0) / (now - t0)
-        info = {k: getattr(self, k) for k in ("id", "url", "name", "dest", "size", "done", "speed", "status", "error", "active", "added")}
-        info["kind"] = type(self).__name__.lower()  # download / video / torrent
-        # byte ranges still missing, so the UI can draw IDM's per-connection bar
-        info["gaps"] = [[p, e] for p, e in list(self.segs) if p <= e][:64] if self.status != "done" else []
-        info["links"] = dict(self.by_link) if len(self.by_link) > 1 else {}
-        info["desc"] = self.desc
-        info["workers"], info["phase"], info["resumable"] = self._rows(), self.phase, self.ranged
-        info["limit"], info["on_done"] = self.limit, self.on_done
-        info["sources"] = dict(self.by_source) if len(self.by_source) > 1 else {}
-        info["scheduled"], info["mirrors"], info["category"] = self.scheduled, len(self.mirrors), self.category
-        info["files"], info["selected"] = list(getattr(self, "files", ())), getattr(self, "selected", None)  # torrents
-        info["checksum"], info["verified"] = self.checksum, self.verified
-        return info
+        with self.lock:
+            gaps = [[p, e] for p, e in self.segs if p <= e][:64] if self.status != "done" else []
+            links_dict = dict(self.by_link) if len(self.by_link) > 1 else {}
+            sources_dict = dict(self.by_source) if len(self.by_source) > 1 else {}
+        return {
+            "id": self.id, "url": self.url, "name": self.name, "dest": self.dest, "size": self.size,
+            "done": self.done, "speed": self.speed, "status": self.status, "error": self.error,
+            "active": self.active, "added": self.added,
+            "kind": type(self).__name__.lower(),
+            "gaps": gaps, "links": links_dict, "desc": self.desc,
+            "workers": self._rows(), "phase": self.phase, "resumable": self.ranged,
+            "limit": self.limit, "on_done": self.on_done, "sources": sources_dict,
+            "scheduled": self.scheduled, "mirrors": len(self.mirrors), "category": self.category,
+            "files": list(getattr(self, "files", ())), "selected": getattr(self, "selected", None),
+            "checksum": self.checksum, "verified": self.verified,
+        }
 
     def run(self):
         self.status, self.error, self.errors, self.expired = "downloading", None, [], False
@@ -620,6 +643,17 @@ class Download:
                                               "application/x-www-form-urlencoded"})
         return urllib.request.urlopen(req, timeout=30)
 
+    def _check_space(self, needed=None):
+        needed = self.size if needed is None else needed
+        if not needed or not self.folder:
+            return
+        try:
+            free = shutil.disk_usage(self.folder).free
+        except (OSError, ValueError):
+            return
+        if free < needed:
+            raise IOError(f"Not enough disk space in {self.folder}: {human(free)} free, {human(needed)} needed")
+
     def _set_dest(self, name):
         if self.title and clean(self.title):  # Save As name, or a sniffed stream named after its page
             t = clean(self.title)
@@ -629,6 +663,7 @@ class Download:
             os.makedirs(self.folder, exist_ok=True)
             self.dest = pick_dest(self.folder, name, self.url)
             self.name = os.path.basename(self.dest)
+        self._check_space(self.size - (self.done or 0) if self.done else self.size)
 
     def _run(self):
         self.phase = "Connecting..."
@@ -851,14 +886,17 @@ class Download:
                         if not chunk:
                             raise IOError("connection closed early")
                         with self.lock:  # seg[1] can shrink when another connection steals half
-                            take = max(0, min(len(chunk), seg[1] - seg[0] + 1))
-                            f.write(chunk[:take])
+                            pos = seg[0]
+                            take = max(0, min(len(chunk), seg[1] - pos + 1))
                             seg[0] += take
                             row["got"] = row.get("got", 0) + take
                             if ip:
                                 self.by_link[ip] = self.by_link.get(ip, 0) + take
                             if len(sources) > 1:
                                 self.by_source[url] = self.by_source.get(url, 0) + take
+                        if take > 0:
+                            f.seek(pos)
+                            f.write(chunk[:take])
                 fails = 0  # finished this request; range_cap means the loop asks for the next one
             except Exception as e:
                 err = e
@@ -968,6 +1006,7 @@ class Video(Download):
                             else:  # new download: never reuse a finished file's name (two copies mixed their parts)
                                 out = free_name(ydl.prepare_filename(info))
                             self.dest, self.name = out, os.path.basename(out)
+                            self._check_space(self.size)
                             self._fast(fmts, out)
                     break
                 except IOError as e:
@@ -1026,6 +1065,18 @@ class Video(Download):
 
 DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # for programs on this PC (aria2)
 ARIA_PORT, ARIA_SECRET, aria_lock, aria_proc = 6801, secrets.token_hex(16), threading.Lock(), None
+
+
+def find_free_port(preferred):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", preferred))
+            return preferred
+    except OSError:
+        pass
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def aria2(method, *params):
@@ -1229,10 +1280,11 @@ def is_private(torrent_path):
 
 
 def start_aria2():
-    global aria_proc
+    global aria_proc, ARIA_PORT
     with aria_lock:
         if aria_proc and aria_proc.poll() is None:
             return
+        ARIA_PORT = find_free_port(ARIA_PORT)
         threading.Thread(target=refresh_trackers, daemon=True).start()
         os.makedirs(HOME, exist_ok=True)
         exe = find_tool("aria2c")
@@ -1550,9 +1602,14 @@ def grab_links(url, headers):
         if r.headers.get_content_type() not in ("text/html", "application/xhtml+xml"):
             raise ValueError("That link is a file, not a web page: add it with Add URL instead.")
         base = r.geturl()
-        page = r.read(5_000_000).decode(r.headers.get_content_charset() or "utf-8", "replace")
-    p = _LinkParser()
-    p.feed(page)
+        p = _LinkParser()
+        charset = r.headers.get_content_charset() or "utf-8"
+        total = 0
+        while chunk := r.read(65536):
+            total += len(chunk)
+            p.feed(chunk.decode(charset, "replace"))
+            if total >= 5_000_000:
+                break
     base = urllib.parse.urljoin(base, p.base or "")
     seen, out = set(), []
     for link in p.links:
@@ -1610,12 +1667,15 @@ ON_DONE = ("nothing", "open", "folder", "sleep", "shutdown")
 HASHES = {32: "md5", 40: "sha1", 64: "sha256", 128: "sha512"}  # told apart by length
 
 
+_HASH_RE = re.compile(r"[0-9a-fA-F]+")
+
+
 def parse_checksum(text):
     """The hash in whatever was pasted ("SHA256: AB12...", "ab12...  file.zip"); "" for nothing, None if no hash."""
     text = str(text or "").strip()
     if not text:
         return ""
-    found = [h for h in re.findall(r"[0-9a-fA-F]+", text) if len(h) in HASHES]
+    found = [h for h in _HASH_RE.findall(text) if len(h) in HASHES]
     return found[0].lower() if found else None
 
 
@@ -1684,15 +1744,33 @@ def power(action):
 
 class Manager:
     def __init__(self, path=None):
-        self.items, self.lock, self.path, self._saved = {}, threading.Lock(), path, None
+        self.items, self.lock, self.path, self._saved, self.dirty = {}, threading.Lock(), path, None, True
         self.power_pending, self.power_note = None, ""  # sleep/shutdown waiting for the other downloads
+
+    def get(self, did, default=None):
+        with self.lock:
+            return self.items.get(did, default)
+
+    def all(self):
+        with self.lock:
+            return list(self.items.values())
+
+    def contains(self, did):
+        with self.lock:
+            return did in self.items
 
     def save(self):
         """Write the list (only if it changed). Cookies are kept too, so logged-in downloads can resume."""
         if not self.path:
             return
-        data = json.dumps([{"kind": type(d).__name__.lower(), **{k: getattr(d, k) for k in SAVED}}
-                           for d in list(self.items.values())], ensure_ascii=False)
+        with self.lock:
+            busy = any(d.status in ("downloading", "queued") for d in self.items.values())
+            if not busy and not self.dirty:
+                return
+            rows = [{"kind": type(d).__name__.lower(), **{k: getattr(d, k) for k in SAVED}}
+                    for d in self.items.values()]
+            self.dirty = False
+        data = json.dumps(rows, ensure_ascii=False)
         if data == self._saved:
             return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -1719,18 +1797,20 @@ class Manager:
             os.replace(self.path, self.path + ".bad")
             return
         kinds = {"download": Download, "video": Video, "torrent": Torrent}
-        for r in rows:
-            d = kinds.get(r.get("kind"), Download)(r["url"], r.get("folder") or DEFAULT_FOLDER, r.get("given"), title=r.get("title"))
-            for k in SAVED:
-                if k not in ("given", "title") and k in r:
-                    setattr(d, k, r[k])
-            if d.error:
-                d.error = friendly_error(IOError(d.error))  # lists saved before plain-language errors
-            if d.status in ("downloading", "queued"):
-                d.status = "queued"  # was running when the app closed: carry on (resume files are on disk)
-            elif d.status == "done" and d.dest and os.path.isfile(d.dest):
-                d.size = d.done = os.path.getsize(d.dest)  # trust the finished file over the last progress tick
-            self.items[d.id] = d
+        with self.lock:
+            for r in rows:
+                d = kinds.get(r.get("kind"), Download)(r["url"], r.get("folder") or DEFAULT_FOLDER, r.get("given"), title=r.get("title"))
+                for k in SAVED:
+                    if k not in ("given", "title") and k in r:
+                        setattr(d, k, r[k])
+                if d.error:
+                    d.error = friendly_error(IOError(d.error))  # lists saved before plain-language errors
+                if d.status in ("downloading", "queued"):
+                    d.status = "queued"  # was running when the app closed: carry on (resume files are on disk)
+                elif d.status == "done" and d.dest and os.path.isfile(d.dest):
+                    d.size = d.done = os.path.getsize(d.dest)  # trust the finished file over the last progress tick
+                self.items[d.id] = d
+            self.dirty = True
         self.kick()
 
     def add(self, url, folder, headers, kind=None, streams=(), title=None, later=False, conns=None,
@@ -1742,30 +1822,34 @@ class Manager:
         if filename:  # "Save As" from the dialog wins over the site's title
             # a video's extension comes from the streams yt-dlp joins; a plain file keeps the name as typed
             d.title = filename if type(d) is Download else os.path.splitext(filename)[0]
-        for old in list(self.items.values()):
-            if old.url == d.url and old.status in ("queued", "downloading"):
-                return old
-        if later:
-            d.status, d.scheduled = "paused", True  # "Download later": waits for the scheduler (or Resume)
-        self.items[d.id] = d
+        with self.lock:
+            for old in self.items.values():
+                if old.url == d.url and old.status in ("queued", "downloading"):
+                    return old
+            if later:
+                d.status, d.scheduled = "paused", True  # "Download later": waits for the scheduler (or Resume)
+            self.items[d.id] = d
+            self.dirty = True
         self.kick()
         return d
 
     def kick(self):
         with self.lock:
-            free = MAX_ACTIVE - sum(d.status == "downloading" for d in list(self.items.values()))
-            for d in list(self.items.values()):
+            free = MAX_ACTIVE - sum(d.status == "downloading" for d in self.items.values())
+            for d in self.items.values():
                 if free <= 0:
                     break
                 if d.status == "queued":
                     d.status = "downloading"
                     d.stop.clear()
+                    self.dirty = True
                     free -= 1
                     threading.Thread(target=self._go, args=(d,), daemon=True).start()
 
     def _go(self, d):
         try:
             d.run()
+            self.dirty = True
             if d.status == "done":
                 verify(d)
                 self.finished(d)
@@ -1778,6 +1862,12 @@ class Manager:
     def finished(self, d):
         """Options on completion."""
         notify("Download complete", d.name or d.url)
+        if os.name == "nt":
+            try:
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+            except Exception:
+                pass
         try:
             if d.on_done == "open" and d.dest and hasattr(os, "startfile"):
                 os.startfile(d.dest)
@@ -1790,7 +1880,9 @@ class Manager:
 
     def power_check(self):
         """Sleep / shut down only once nothing is downloading or waiting, so no other download gets cut off."""
-        if self.power_pending and not any(x.status in ("downloading", "queued") for x in list(self.items.values())):
+        with self.lock:
+            busy = any(x.status in ("downloading", "queued") for x in self.items.values())
+        if self.power_pending and not busy:
             action, self.power_pending = self.power_pending, None
             self.power_note = "Shutting down in 60 seconds" if action == "shutdown" else ""
             power(action)
@@ -1808,11 +1900,13 @@ class Manager:
             d.on_done = on_done
         if scheduled is not None:
             d.scheduled = scheduled
+        self.dirty = True
 
     def match_expired(self, url, headers):
         """IDM's "refresh download address": a download whose link expired, and the browser now hands over
         the same file again (same size and type) with a fresh link: continue that one instead of starting over."""
-        waiting = [d for d in list(self.items.values()) if d.expired and type(d) is Download and d.status != "done"]
+        with self.lock:
+            waiting = [d for d in self.items.values() if d.expired and type(d) is Download and d.status != "done"]
         if not waiting:
             return None
         try:
@@ -1824,13 +1918,14 @@ class Manager:
             if size and d.size == size and os.path.splitext(d.name or "")[1].lower() == ext:
                 d.url, d.given = url, {**d.given, **headers}
                 d.headers, d.expired, d.error = {**UA, **d.given}, False, None
+                self.dirty = True
                 self.resume(d)
                 return d
         return None
 
     def run_schedule(self, start):
         """Scheduler fired (or Start now / Stop now): start, or pause, every scheduled download."""
-        for d in list(self.items.values()):
+        for d in self.all():
             if not d.scheduled:
                 continue
             if start and d.status in ("paused", "error"):
@@ -1842,17 +1937,25 @@ class Manager:
         if d.status == "queued":
             d.status = "paused"
         d.stop.set()
+        self.dirty = True
 
     def resume(self, d):
         if d.status in ("paused", "error"):
             d.status = "queued"
+            self.dirty = True
             self.kick()
 
     def remove(self, d, files=False):
         """Take it off the list. files=False keeps .fdpart/.fdl, so re-adding the link resumes;
         files=True ("also delete the file") removes the file and every part it left behind."""
         d.stop.set()
-        self.items.pop(d.id, None)
+        with self.lock:
+            self.items.pop(d.id, None)
+            self.dirty = True
+        if files:
+            threading.Thread(target=self._delete_files, args=(d,), daemon=True).start()
+        if files:
+            threading.Thread(target=self._delete_files, args=(d,), daemon=True).start()
         if files:
             threading.Thread(target=self._delete_files, args=(d,), daemon=True).start()
 
@@ -1938,8 +2041,6 @@ def launch_cmd():
 
 
 SETTINGS_FILE = os.path.join(HOME, "settings.json")
-
-
 SETTINGS_LOCK = threading.Lock()  # download threads write it too (learned connections per site)
 
 
@@ -1953,7 +2054,7 @@ def settings(**changes):
             s = {}
         if changes:
             s.update(changes)
-            os.makedirs(HOME, exist_ok=True)
+            os.makedirs(os.path.dirname(SETTINGS_FILE) or HOME, exist_ok=True)
             with open(SETTINGS_FILE + ".tmp", "w", encoding="utf-8") as f:
                 json.dump(s, f, indent=2)
             os.replace(SETTINGS_FILE + ".tmp", SETTINGS_FILE)  # all or nothing, never half a file
@@ -2141,9 +2242,12 @@ def progress_titles():
     a whole browser engine (WebView2, ~50-100 MB), so a pile of finished ones adds up."""
     done_at = {}
     while True:
+        if not PROGRESS:
+            time.sleep(1)
+            continue
         close = options()["close_done"]
         for did, w in list(PROGRESS.items()):
-            d = M.items.get(did)
+            d = M.get(did)
             if not d:
                 continue
             try:
@@ -2163,7 +2267,8 @@ def progress_titles():
 def open_progress(did):
     """IDM's per-download window: a separate Windows window showing ui.html in progress mode.
     Already open: bring it forward. No app window (browser fallback): False, the page shows it inline."""
-    if WINDOW is None or did not in M.items:
+    d = M.get(did)
+    if WINDOW is None or not d:
         return False
     w = PROGRESS.get(did)
     if w:
@@ -2171,7 +2276,7 @@ def open_progress(did):
         w.restore()
         return True
     import webview
-    w = webview.create_window(progress_title(M.items[did]), f"http://127.0.0.1:{PORT}/?progress={did}",
+    w = webview.create_window(progress_title(d), f"http://127.0.0.1:{PORT}/?progress={did}",
                               width=680, height=580, min_size=(520, 420))
     w.events.closed += lambda: PROGRESS.pop(did, None)
     PROGRESS[did] = w
@@ -2268,7 +2373,7 @@ def start_tray():
 
     def tooltip():
         while True:
-            busy = [d for d in list(M.items.values()) if d.status == "downloading"]
+            busy = [d for d in M.all() if d.status == "downloading"]
             speed = sum(d.info()["speed"] for d in busy)
             TRAY.title = f"FastDL - {len(busy)} downloading · {human(speed)}/s" if busy else "FastDL"
             time.sleep(2)
@@ -2281,6 +2386,9 @@ def quit_app():
     if TRAY:
         TRAY.visible = False  # don't leave a ghost icon in the tray
     os._exit(0)
+
+
+_UI_BYTES, _LOGO_BYTES = None, None
 
 
 class API(BaseHTTPRequestHandler):
@@ -2302,11 +2410,17 @@ class API(BaseHTTPRequestHandler):
         if not self.trusted():
             return self.send(403, {"error": "forbidden"})
         if urllib.parse.urlparse(self.path).path == "/":  # also "/?progress=<id>": a download's own window
-            with open(UI_FILE, "rb") as f:
-                return self.send(200, f.read(), "text/html; charset=utf-8")
+            global _UI_BYTES
+            if _UI_BYTES is None:
+                with open(UI_FILE, "rb") as f:
+                    _UI_BYTES = f.read()
+            return self.send(200, _UI_BYTES, "text/html; charset=utf-8")
         if self.path == "/logo.png":  # header logo and page icon
-            with open(LOGO, "rb") as f:
-                return self.send(200, f.read(), "image/png")
+            global _LOGO_BYTES
+            if _LOGO_BYTES is None:
+                with open(LOGO, "rb") as f:
+                    _LOGO_BYTES = f.read()
+            return self.send(200, _LOGO_BYTES, "image/png")
         q = urllib.parse.urlparse(self.path).path.strip("/").split("/")
         if q[:2] == ["api", "dialog"] and len(q) == 3 and q[2] in DIALOGS:  # filling a Download File Info window
             s = settings()
@@ -2321,7 +2435,7 @@ class API(BaseHTTPRequestHandler):
         if self.path == "/api/categories":
             return self.send(200, {"categories": categories(), "custom": categories()[len(BUILTIN_CATS):]})
         if self.path == "/api/schedule":
-            waiting = sum(d.scheduled and d.status in ("paused", "error") for d in list(M.items.values()))
+            waiting = sum(d.scheduled and d.status in ("paused", "error") for d in M.all())
             return self.send(200, {**SCHEDULE_DEFAULT, **(settings().get("schedule") or {}), "waiting": waiting})
         if self.path == "/api/update":
             return self.send(200, {"current": APP_VERSION, "update": {k: v for k, v in UPDATE.items()},
@@ -2331,7 +2445,7 @@ class API(BaseHTTPRequestHandler):
         if self.path == "/api/links":
             return self.send(200, {"enabled": MULTILINK, "links": links()})
         if self.path == "/api/downloads":
-            return self.send(200, [d.info() for d in list(M.items.values())])
+            return self.send(200, [d.info() for d in M.all()])
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -2432,6 +2546,8 @@ class API(BaseHTTPRequestHandler):
             folder, filename = str(body.get("folder") or "").strip(), clean(str(body.get("filename") or ""))
             if not folder or not filename:
                 return self.send(400, {"error": "Choose where to save it"})
+            if not os.path.isabs(folder):
+                return self.send(400, {"error": "The download folder must be a full path, like C:\\Downloads"})
             cat = str(body.get("category") or spec["category"])
             s = settings()
             if body.get("remember"):  # "Remember this path for <category>"
@@ -2452,8 +2568,10 @@ class API(BaseHTTPRequestHandler):
                 return self.send(200, {"links": grab_links(url, {"Cookie": str(body["cookie"])} if body.get("cookie") else {})})
             except Exception as e:
                 return self.send(400, {"error": friendly_error(e)})
-        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "checksum" and p[2] in M.items:
-            d, value = M.items[p[2]], parse_checksum(body.get("checksum"))
+        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "checksum" and M.contains(p[2]):
+            d, value = M.get(p[2]), parse_checksum(body.get("checksum"))
+            if not d:
+                return self.send(404, {"error": "not found"})
             if isinstance(d, Torrent):
                 return self.send(400, {"error": "Torrents are checked piece by piece by BitTorrent itself"})
             if value is None:
@@ -2501,6 +2619,8 @@ class API(BaseHTTPRequestHandler):
             if checksum is None:
                 return self.send(400, {"error": "Checksum: paste the MD5, SHA-1, SHA-256 or SHA-512 the site shows"})
             folder = str(body.get("folder") or "").strip() or (cat_folder(cat) if cat else DEFAULT_FOLDER)
+            if folder and not os.path.isabs(folder):
+                return self.send(400, {"error": "The download folder must be a full path, like C:\\Downloads"})
             post, response = body.get("post"), None
             if post:  # form download: send the form now, while the browser's own download waits paused
                 try:
@@ -2527,7 +2647,10 @@ class API(BaseHTTPRequestHandler):
         if p == ["api", "power", "cancel"]:
             M.cancel_power()
             return self.send(200, {"ok": True})
-        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "options" and p[2] in M.items:
+        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "options" and M.contains(p[2]):
+            d = M.get(p[2])
+            if not d:
+                return self.send(404, {"error": "not found"})
             try:
                 limit = None if body.get("limit") is None else max(0, int(body["limit"]))
             except (TypeError, ValueError):
@@ -2536,10 +2659,12 @@ class API(BaseHTTPRequestHandler):
             if on_done is not None and on_done not in ON_DONE:
                 return self.send(400, {"error": f"on_done must be one of {', '.join(ON_DONE)}"})
             sched = body.get("scheduled")
-            M.options(M.items[p[2]], limit, on_done, None if sched is None else bool(sched))
-            return self.send(200, M.items[p[2]].info())
-        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "files" and p[2] in M.items:
-            d = M.items[p[2]]  # torrent: which files to download
+            M.options(d, limit, on_done, None if sched is None else bool(sched))
+            return self.send(200, d.info())
+        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "files" and M.contains(p[2]):
+            d = M.get(p[2])  # torrent: which files to download
+            if not d:
+                return self.send(404, {"error": "not found"})
             known = {f["index"] for f in getattr(d, "files", ())}
             sel = body.get("selected")
             if not isinstance(d, Torrent) or not known:
@@ -2548,12 +2673,16 @@ class API(BaseHTTPRequestHandler):
                 return self.send(400, {"error": "Pick at least one file"})
             d.choose(sel)
             return self.send(200, d.info())
-        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "remove" and p[2] in M.items:
-            M.remove(M.items[p[2]], files=bool(body.get("files")))  # files: "also delete the file from disk"
+        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] == "remove" and M.contains(p[2]):
+            d = M.get(p[2])
+            if d:
+                M.remove(d, files=bool(body.get("files")))  # files: "also delete the file from disk"
             close_progress(p[2])
             return self.send(200, {"ok": True})
-        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] in ("pause", "resume", "folder") and p[2] in M.items:
-            getattr(M, p[3])(M.items[p[2]])
+        if len(p) == 4 and p[:2] == ["api", "downloads"] and p[3] in ("pause", "resume", "folder") and M.contains(p[2]):
+            d = M.get(p[2])
+            if d:
+                getattr(M, p[3])(d)
             return self.send(200, {"ok": True})
         self.send(404, {"error": "not found"})
 
