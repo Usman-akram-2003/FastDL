@@ -70,7 +70,7 @@ if FROZEN:
         sys.stdout = sys.stderr = open(os.path.join(HOME, "fastdl.log"), "a", encoding="utf-8", buffering=1)
 
 PORT = int(os.environ.get("FASTDL_PORT") or 9614)
-APP_VERSION = "1.12"  # bump for every release: build.py stamps it into the installer and latest.json
+APP_VERSION = "1.13"  # bump for every release: build.py stamps it into the installer and latest.json
 # where latest.json is published (Options can override): always the newest GitHub release
 UPDATE_URL = "https://github.com/Usman-akram-2003/FastDL/releases/latest/download/latest.json"
 CONNS = 8             # max connections per file (IDM's default; some servers ban more)
@@ -879,6 +879,9 @@ class Download:
                 with opener(ip).open(req, timeout=30) as r, open(part, "r+b") as f:
                     if r.status != 206:
                         raise IOError("server stopped accepting ranges")
+                    content_range = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", r.headers.get("Content-Range", "").strip(), re.IGNORECASE)
+                    if not content_range or tuple(map(int, content_range.groups())) != (before, end, self.size):
+                        raise IOError("server returned an incorrect Content-Range")
                     row["info"] = "Receiving data..."
                     f.seek(seg[0])
                     while not self.stop.is_set() and seg[0] <= min(seg[1], end):
@@ -887,7 +890,7 @@ class Download:
                             raise IOError("connection closed early")
                         with self.lock:  # seg[1] can shrink when another connection steals half
                             pos = seg[0]
-                            take = max(0, min(len(chunk), seg[1] - pos + 1))
+                            take = max(0, min(len(chunk), min(seg[1], end) - pos + 1))
                             seg[0] += take
                             row["got"] = row.get("got", 0) + take
                             if ip:
@@ -1006,6 +1009,8 @@ class Video(Download):
                             else:  # new download: never reuse a finished file's name (two copies mixed their parts)
                                 out = free_name(ydl.prepare_filename(info))
                             self.dest, self.name = out, os.path.basename(out)
+                            est = sum((f.get("filesize") or f.get("filesize_approx") or 0) for f in fmts)
+                            self.size = self.size or (est if est > 0 else None)
                             self._check_space(self.size)
                             self._fast(fmts, out)
                     break
@@ -1408,6 +1413,9 @@ class Torrent(Download):
             if (s.get("bittorrent") or {}).get("info"):
                 self._read_files()  # per-file progress for the Files tab
             self.size = int(s["totalLength"]) or None
+            if self.size and not getattr(self, "_space_checked", False):
+                self._check_space(self.size)
+                self._space_checked = True
             self.done, self.speed = int(s["completedLength"]), int(s["downloadSpeed"])
             self.active, self.ranged = int(s["connections"]), True
             if sent_limit != self.limit:  # speed limiter, live: aria2 takes it per download
@@ -1434,8 +1442,18 @@ class Torrent(Download):
 _extractors = None
 
 
+_KNOWN_VIDEO_DOMAINS = {
+    "youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "bilibili.com",
+    "tiktok.com", "twitch.tv", "facebook.com", "fb.watch", "instagram.com",
+    "twitter.com", "x.com", "reddit.com", "ok.ru", "vk.com", "rumble.com"
+}
+
+
 def is_video_site(url):
     global _extractors
+    host = site_of(url)
+    if any(host == d or host.endswith("." + d) for d in _KNOWN_VIDEO_DOMAINS):
+        return True
     try:
         import yt_dlp
     except ImportError:
@@ -1452,6 +1470,8 @@ def make(url, folder=None, headers=None, kind=None, streams=(), title=None):
         if is_video_site(url) or not streams:
             return Video(url, folder, headers)
         s = streams[0]  # extension sends manifests first, then the playing/biggest file
+        if is_video_site(s.get("url", "")):
+            return Video(s["url"], folder, headers, title=title)
         headers = {k: v for k, v in (headers or {}).items() if k != "Cookie"}  # page cookies never go to another host
         return (Video if s["manifest"] else Download)(s["url"], folder, headers, title=title)
     if kind == "torrent" or url.startswith("magnet:") or urllib.parse.urlparse(url).path.lower().endswith(".torrent"):
@@ -1474,27 +1494,43 @@ def formats(url, headers=None, streams=(), title=None):
     plus audio only. Each entry's 'format' is a yt-dlp format selector the download then uses."""
     result = {"title": title or "", "folder": DEFAULT_FOLDER, "items": []}
     if not is_video_site(url) and streams:  # a page yt-dlp doesn't know, but the extension saw it play
-        result["items"] = [{"format": None, "label": "Detected video stream", "size": None, "ext": "mp4"}]
-        if streams[0].get("manifest"):  # an HLS/DASH playlist lists its own qualities: offer them like a known site's
+        embed = next((s for s in streams if is_video_site(s.get("url", ""))), None)
+        if embed:
+            try:
+                import yt_dlp
+                with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "socket_timeout": 8, "retries": 0, "extractor_retries": 0, "http_headers": headers or {}, **ytdlp_auth()}) as ydl:
+                    info = ydl.extract_info(embed["url"], download=False)
+                result["title"] = info.get("title") or result["title"]
+                result["items"] = quality_items(info) + subtitle_items(info)
+                return result
+            except Exception:
+                pass
+        manifest = next((s for s in streams if s.get("manifest")), None)
+        if manifest:
             try:
                 import yt_dlp
                 hdr = {k: v for k, v in (headers or {}).items() if k != "Cookie"}  # the page's cookies are not for the CDN
-                with yt_dlp.YoutubeDL({"quiet": True, "http_headers": hdr, **ytdlp_auth()}) as ydl:
-                    info = ydl.extract_info(streams[0]["url"], download=False)
+                with yt_dlp.YoutubeDL({"quiet": True, "socket_timeout": 8, "retries": 0, "extractor_retries": 0, "http_headers": hdr, **ytdlp_auth()}) as ydl:
+                    info = ydl.extract_info(manifest["url"], download=False)
                 found = quality_items(info)
                 if len(found) > 1 or (found and found[0]["format"]):
                     result["items"] = found
-            except Exception as e:  # the playlist is DRM-protected, or not readable: keep the single entry, say why when it's DRM
-                if re.search(r"DRM", str(e)):
+                    return result
+            except Exception as e:
+                if re.search(r" DRM ", str(e)):
                     result["error"] = friendly_error(e)
+        result["items"] = [{"format": None, "label": "Detected video stream", "size": streams[0].get("size") or None, "ext": "mp4"}]
         return result
     try:
         import yt_dlp
-        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "http_headers": headers or {}, **ytdlp_auth()}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "socket_timeout": 8, "retries": 0, "extractor_retries": 0, "http_headers": headers or {}, **ytdlp_auth()}) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:
         result["error"] = friendly_error(e)[:300]
-        result["items"] = [{"format": None, "label": "Best quality", "size": None, "ext": "mp4"}]
+        if streams:
+            result["items"] = [{"format": None, "label": "Detected video stream", "size": streams[0].get("size") or None, "ext": "mp4"}]
+        else:
+            result["items"] = [{"format": None, "label": "Best quality", "size": None, "ext": "mp4"}]
         return result
     result["title"] = info.get("title") or result["title"]
     result["items"] = quality_items(info) + subtitle_items(info)
@@ -1954,10 +1990,6 @@ class Manager:
             self.dirty = True
         if files:
             threading.Thread(target=self._delete_files, args=(d,), daemon=True).start()
-        if files:
-            threading.Thread(target=self._delete_files, args=(d,), daemon=True).start()
-        if files:
-            threading.Thread(target=self._delete_files, args=(d,), daemon=True).start()
 
     @staticmethod
     def _delete_files(d):
@@ -1977,13 +2009,23 @@ class Manager:
         # only names built from this download's own file name, nothing else in the folder
         paths = [d.dest, d.dest + ".aria2", *glob.glob(glob.escape(d.dest) + ".f*")]
         for p in paths:
-            try:
-                if os.path.isdir(p):  # a multi-file torrent is a folder
-                    shutil.rmtree(p)
-                elif os.path.exists(p):
-                    os.remove(p)
-            except OSError as e:
-                print("could not delete", p, e)
+            err = None
+            for _ in range(10):
+                try:
+                    if os.path.isdir(p):  # a multi-file torrent is a folder
+                        shutil.rmtree(p)
+                    elif os.path.exists(p):
+                        os.remove(p)
+                    err = None
+                    break
+                except FileNotFoundError:
+                    err = None
+                    break
+                except OSError as e:
+                    err = e
+                    time.sleep(0.1)
+            if err and os.path.exists(p):
+                print("could not delete", p, err)
 
     def folder(self, d):
         if d.dest and hasattr(os, "startfile"):
@@ -2227,6 +2269,49 @@ def show_window():
     # (no "on_top" trick: pywebview sets that from the calling thread, and WinForms hangs on it)
 
 
+BATCH_IMPORTS = {}
+BATCH_LOCK = threading.Lock()
+
+
+def batch_import(urls):
+    """Validate browser links and open an editable review dialog, never downloads."""
+    if not isinstance(urls, list) or not urls or len(urls) > 500:
+        raise ValueError("Send between 1 and 500 links")
+    unique = []
+    for url in urls:
+        if not isinstance(url, str) or len(url) > 8192 or any(c.isspace() or ord(c) < 32 for c in url):
+            raise ValueError("Every link must be an HTTP or HTTPS URL")
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            valid = parsed.scheme in ("http", "https") and bool(parsed.hostname)
+            parsed.port
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("Every link must be an HTTP or HTTPS URL")
+        if url not in unique:
+            unique.append(url)
+    text = "\n".join(unique)
+    if WINDOW is not None:
+        try:
+            show_window()
+            WINDOW.evaluate_js("openMulti(" + json.dumps(text) + ")")
+            return {"ok": True, "count": len(unique), "window": "app"}
+        except Exception:
+            pass  # window not ready: retain the links for a browser review
+    token = secrets.token_urlsafe(24)
+    with BATCH_LOCK:
+        now = time.monotonic()
+        for key, (created, _) in list(BATCH_IMPORTS.items()):
+            if now - created > 300:
+                del BATCH_IMPORTS[key]
+        while len(BATCH_IMPORTS) >= 20:
+            del BATCH_IMPORTS[next(iter(BATCH_IMPORTS))]
+        BATCH_IMPORTS[token] = (now, unique)
+    webbrowser.open(f"http://127.0.0.1:{PORT}/?batch={token}")
+    return {"ok": True, "count": len(unique), "window": "browser"}
+
+
 PROGRESS = {}  # download id -> its own progress window (like IDM's)
 
 
@@ -2326,7 +2411,10 @@ def dialog_spec(body, headers, streams):
 def close_progress(did):
     w = PROGRESS.pop(did, None)
     if w:
-        w.destroy()
+        try:
+            w.destroy()
+        except Exception:
+            pass
 
 
 def notify(title, text):
@@ -2422,6 +2510,12 @@ class API(BaseHTTPRequestHandler):
                     _LOGO_BYTES = f.read()
             return self.send(200, _LOGO_BYTES, "image/png")
         q = urllib.parse.urlparse(self.path).path.strip("/").split("/")
+        if q[:2] == ["api", "batch"] and len(q) == 3:
+            with BATCH_LOCK:
+                entry = BATCH_IMPORTS.pop(q[2], None)
+            if entry is None or time.monotonic() - entry[0] > 300:
+                return self.send(404, {"error": "These links expired; send them again from your browser"})
+            return self.send(200, {"urls": entry[1]})
         if q[:2] == ["api", "dialog"] and len(q) == 3 and q[2] in DIALOGS:  # filling a Download File Info window
             s = settings()
             spec = DIALOGS[q[2]]
@@ -2456,6 +2550,11 @@ class API(BaseHTTPRequestHandler):
         except ValueError:
             return self.send(400, {"error": "bad json"})
         p = self.path.strip("/").split("/")
+        if p == ["api", "batch"]:
+            try:
+                return self.send(200, batch_import(body.get("urls") if isinstance(body, dict) else None))
+            except ValueError as e:
+                return self.send(400, {"error": str(e)})
         if p == ["api", "links"]:
             global MULTILINK
             MULTILINK = bool(body.get("enabled"))  # applies to downloads that start from now on
@@ -2539,15 +2638,25 @@ class API(BaseHTTPRequestHandler):
                 settings(categories=settings().get("categories", []) + [name])
             return self.send(200, {"name": name, "categories": categories(), "folder": cat_folder(name)})
         if len(p) == 4 and p[:2] == ["api", "dialog"] and p[3] in ("submit", "cancel") and p[2] in DIALOGS:
-            spec = DIALOGS.pop(p[2])
-            threading.Timer(0.2, spec["window"].destroy).start()  # after this reply reaches the window
             if p[3] == "cancel":
+                spec = DIALOGS.pop(p[2])
+                if spec.get("window"):
+                    try:
+                        threading.Timer(0.2, spec["window"].destroy).start()
+                    except Exception:
+                        pass
                 return self.send(200, {"ok": True})
             folder, filename = str(body.get("folder") or "").strip(), clean(str(body.get("filename") or ""))
             if not folder or not filename:
                 return self.send(400, {"error": "Choose where to save it"})
             if not os.path.isabs(folder):
                 return self.send(400, {"error": "The download folder must be a full path, like C:\\Downloads"})
+            spec = DIALOGS.pop(p[2])
+            if spec.get("window"):
+                try:
+                    threading.Timer(0.2, spec["window"].destroy).start()  # after this reply reaches the window
+                except Exception:
+                    pass
             cat = str(body.get("category") or spec["category"])
             s = settings()
             if body.get("remember"):  # "Remember this path for <category>"
@@ -2583,11 +2692,14 @@ class API(BaseHTTPRequestHandler):
         if p == ["api", "browse"]:
             return self.send(200, {"folder": browse(str(body.get("folder") or DEFAULT_FOLDER))})
         if p == ["api", "downloads"] and body.get("torrent"):  # .torrent file from the Add dialog
+            folder = str(body.get("folder") or "").strip() or DEFAULT_FOLDER
+            if folder and not os.path.isabs(folder):
+                return self.send(400, {"error": "The download folder must be a full path, like C:\\Downloads"})
             try:
                 path = save_torrent(str(body["torrent"]), str(body.get("torrent_name") or ""))
             except (ValueError, TypeError):
                 return self.send(400, {"error": "That is not a valid .torrent file."})
-            d = M.add(path, str(body.get("folder") or "").strip() or DEFAULT_FOLDER, {}, "torrent", later=bool(body.get("later")))
+            d = M.add(path, folder, {}, "torrent", later=bool(body.get("later")))
             if not body.get("later"):
                 open_progress(d.id)
             return self.send(200, d.info())

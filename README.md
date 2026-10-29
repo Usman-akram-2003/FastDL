@@ -14,6 +14,7 @@
 - **Torrents**: magnet links and `.torrent` files; choose which files you want before anything downloads.
 - **Browser button**: hover any video for *Download this video*; browser downloads go to FastDL with a *Download File Info* window first (folder, category, name). If FastDL is closed, the browser starts it.
 - **Many links at once**: paste a list (one link per line) in *Add URL → Add many links*, or write a pattern like `file[01-14].zip`; FastDL queues them all and runs a few at a time.
+- **Browser link batches**: right-click a page for *Download page links with FastDL*, or select links/text and choose *Download selected links with FastDL*. Review the collected links in *Add many links* before starting or scheduling them. Duplicate links are removed; each import supports up to 500 links.
 - **Site grabber**: give it a web page and it lists the files the page links to (pdf, zip, images, videos); filter by type, tick what you want.
 - **Checksum check**: paste the MD5 / SHA-1 / SHA-256 / SHA-512 a site lists; FastDL tells you if the finished file doesn't match.
 - **Proxy**: Windows' proxy settings by default, or your own in Options (`http://user:pass@host:port`, or `none`).

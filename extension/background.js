@@ -12,14 +12,16 @@ const NO_VIDEO_SITES = /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com|goog
 const blocked = url => { try { return STORE && NO_VIDEO_SITES.test(new URL(url).hostname); } catch { return false; } };
 
 const API = "http://127.0.0.1:9614/api";
-const MANIFEST_URL = /\.(m3u8|mpd)(\?|$)/i;
-const MANIFEST_TYPE = /mpegurl|dash\+xml/i;
+const MANIFEST_URL = /\.(m3u8|mpd)($|[?#])/i;
+const MANIFEST_TYPE = /mpegurl|dash\+xml|vnd\.apple\.mpegurl|vnd\.ms-sstr\+xml/i;
+const MEDIA_URL = /\.(mp4|m4v|webm|mkv|flv|mov|avi|ts|m4s|m4a|aac|mp3|ogg|opus)($|[?#])/i;
 
 async function call(path, body) {
   const r = await fetch(API + path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-FastDL": "1" },
     body: JSON.stringify(body),
+    ...(path === "/formats" ? { signal: AbortSignal.timeout(25000) } : {}),
   });
   return { ok: r.ok, ...(await r.json()) };
 }
@@ -43,7 +45,8 @@ function startFastDL() {
 async function api(path, body) {
   try {
     return await call(path, body);
-  } catch { // nothing listening
+  } catch (e) { // nothing listening
+    if (e.name === "TimeoutError" || e.name === "AbortError") throw e;
     if (!(await startFastDL())) throw new Error("FastDL could not start");
     return call(path, body);
   }
@@ -70,12 +73,32 @@ function badge(ok) {
 ext.webRequest.onHeadersReceived.addListener(d => {
   if (d.tabId < 0) return;
   const h = Object.fromEntries((d.responseHeaders || []).map(x => [x.name.toLowerCase(), x.value || ""]));
-  const type = h["content-type"] || "";
-  const size = +(h["content-range"] || "").split("/")[1] || +h["content-length"] || 0;
+  const type = (h["content-type"] || "").toLowerCase();
+  let size = 0;
+  const cr = h["content-range"] || "";
+  const crMatch = cr.match(/\/(\d+)/);
+  if (crMatch) {
+    size = +crMatch[1];
+  } else {
+    size = +h["content-length"] || 0;
+  }
   const manifest = MANIFEST_URL.test(d.url) || MANIFEST_TYPE.test(type);
-  // ponytail: video/* over 2 MB counts as a real file; sites streaming bare mp4 segments without a manifest can fool it
-  const file = /^video\//i.test(type) && !/mp2t|iso\.segment/i.test(type) && size > 2e6;
-  if (manifest || file) remember(d.tabId, { url: d.url, manifest, size });
+  const mediaUrl = MEDIA_URL.test(d.url);
+  const mediaType = /^(video|audio)\//i.test(type);
+  const isSegment = /mp2t|iso\.segment/i.test(type) || /\.ts($|[?#])/i.test(d.url);
+
+  if (manifest) {
+    remember(d.tabId, { url: d.url, manifest: true, size: 0 });
+    return;
+  }
+  if (mediaType || mediaUrl) {
+    // Fast detection: accept immediate media chunks (>100KB or video/audio type or total size)
+    if (!isSegment && (size > 100000 || mediaType || size === 0)) {
+      remember(d.tabId, { url: d.url, manifest: false, size });
+    } else if (isSegment && size > 50000) {
+      remember(d.tabId, { url: d.url, manifest: false, size, isSegment: true });
+    }
+  }
 }, { urls: ["<all_urls>"], types: ["xmlhttprequest", "media", "other"] }, ["responseHeaders"]);
 
 async function remember(tabId, s) {
@@ -83,23 +106,52 @@ async function remember(tabId, s) {
   const list = (await session.get(key))[key] || [];
   if (list.some(x => x.url === s.url)) return;
   list.push(s);
-  await session.set({ [key]: list.slice(-20) });
-  action.setBadgeText({ tabId, text: String(Math.min(list.length, 20)) });
+  await session.set({ [key]: list.slice(-30) });
+  action.setBadgeText({ tabId, text: String(Math.min(list.length, 30)) });
 }
 
+const tabUrls = new Map();
 ext.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.url) session.remove("t" + tabId); // new page (or YouTube-style in-page navigation)
+  if (info.url) {
+    const oldUrl = tabUrls.get(tabId);
+    tabUrls.set(tabId, info.url);
+    try {
+      const u1 = new URL(oldUrl || "");
+      const u2 = new URL(info.url);
+      const v1 = u1.searchParams.get("v"), v2 = u2.searchParams.get("v");
+      // Only clear streams on true navigation (domain, path, or distinct video ID changed)
+      if (u1.origin !== u2.origin || u1.pathname !== u2.pathname || (v1 && v2 && v1 !== v2)) {
+        session.remove("t" + tabId);
+        action.setBadgeText({ tabId, text: "" });
+      }
+    } catch {
+      session.remove("t" + tabId);
+      action.setBadgeText({ tabId, text: "" });
+    }
+  }
 });
-ext.tabs.onRemoved.addListener(tabId => session.remove("t" + tabId));
+ext.tabs.onRemoved.addListener(tabId => {
+  session.remove("t" + tabId);
+  tabUrls.delete(tabId);
+});
 
-// Streams this tab played, best first: manifests, then the playing file, then the biggest files.
+// Streams this tab played or detected, best first: manifests, then the playing file, then biggest files, then segments.
 async function streamsOf(tab, src) {
   const key = "t" + tab.id;
-  const list = (await session.get(key))[key] || [];
+  let list = (await session.get(key))[key] || [];
+  if ((!list.length || !list.some(s => s.manifest || !s.isSegment)) && tab?.id) {
+    try {
+      const res = await ext.tabs.sendMessage(tab.id, { type: "extractStreams" });
+      if (Array.isArray(res) && res.length) {
+        list = [...list, ...res];
+      }
+    } catch {}
+  }
   const manifests = list.filter(s => s.manifest);
-  const files = list.filter(s => !s.manifest && s.url !== src).sort((a, b) => b.size - a.size);
+  const files = list.filter(s => !s.manifest && s.url !== src && !s.isSegment).sort((a, b) => b.size - a.size);
+  const segments = list.filter(s => s.isSegment);
   const playing = /^https?:/.test(src || "") ? [{ url: src, manifest: MANIFEST_URL.test(src) }] : [];
-  return [...manifests, ...playing, ...files];
+  return [...manifests, ...playing, ...files, ...segments];
 }
 
 // Page url + sniffed streams; FastDL picks: known site -> yt-dlp, else manifest, else the playing file.
@@ -109,10 +161,51 @@ async function grab(tab, pageUrl, src, extra = {}) {
 
 // Messages from the video button (button.js). Content scripts can't call FastDL themselves:
 // the page's CORS rules apply to them, so the background does every request.
+const formatRequests = new Map();
 const HANDLERS = {
   grab: (m, tab) => grab(tab, m.pageUrl, m.src).then(ok => (badge(ok), ok)),
-  formats: async (m, tab) =>
-    api("/formats", { ...(await browserHeaders(m.pageUrl, m.pageUrl)), streams: await streamsOf(tab, m.src), title: tab.title }),
+  addStreams: (m, tab) => {
+    if (Array.isArray(m.streams)) {
+      for (const s of m.streams) remember(tab.id, s);
+    }
+    return Promise.resolve(true);
+  },
+  formats: async (m, tab) => {
+    if (m.prefetch && !(await alive())) return false;
+    // YouTube is extracted from its page URL. Playback chunks and blob URLs
+    // change continuously and must not invalidate a page's quality lookup.
+    const youtube = /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i.test(new URL(m.pageUrl).hostname);
+    const streams = youtube ? [] : [...(m.pageStreams || []), ...(await streamsOf(tab, m.src))];
+    const key = JSON.stringify([tab.id, m.pageUrl, youtube ? "" : m.src || "", [...new Set(streams.map(s => s.url))].sort()]);
+    const previous = formatRequests.get(key);
+    if (previous && Date.now() - previous.time < 60000) return previous.promise;
+    const entry = { time: Date.now() };
+    entry.promise = (async () => {
+      try {
+        // Public YouTube metadata doesn't need the account's cookies. Reading
+        // them can stall before fetch's timeout starts, and signed-in extraction
+        // can require additional account-specific challenges. Keep login support
+        // as a fallback, and continue sending cookies for actual downloads.
+        const headers = youtube ? { url: m.pageUrl, referer: m.pageUrl, ua: navigator.userAgent } :
+          await browserHeaders(m.pageUrl, m.pageUrl);
+        let result = await api("/formats", { ...headers, streams, title: tab.title });
+        if (youtube && result.error) {
+          result = await api("/formats", { ...(await browserHeaders(m.pageUrl, m.pageUrl)), streams, title: tab.title });
+        }
+        if (!result.ok || result.error) formatRequests.delete(key);
+        return result;
+      } catch (e) {
+        formatRequests.delete(key);
+        if (e.name === "TimeoutError" || e.name === "AbortError") {
+          return { ok: true, items: [], error: "Quality lookup timed out. Check FastDL's connection to the video site, then click again to retry." };
+        }
+        throw e;
+      }
+    })();
+    formatRequests.set(key, entry);
+    for (const [k, v] of formatRequests) if (Date.now() - v.time >= 60000) formatRequests.delete(k);
+    return entry.promise;
+  },
   download: (m, tab) =>
     grab(tab, m.pageUrl, m.src, { format: m.format, folder: m.folder, filename: m.filename, desc: m.desc, later: m.later })
       .then(ok => (badge(ok), ok)),
@@ -185,9 +278,9 @@ ext.downloads.onCreated.addListener(async item => {
   // Options > "Leave to the browser": these types / small files stay a normal browser download
   const o = await browserOptions();
   const name = (item.filename || new URL(url).pathname).split(/[\\/]/).pop();
-  const ext = (name.match(/\.([a-z0-9]{1,8})$/i) || [])[1]?.toLowerCase();
+  const suffix = (name.match(/\.([a-z0-9]{1,8})$/i) || [])[1]?.toLowerCase();
   const size = item.fileSize > 0 ? item.fileSize : item.totalBytes;
-  if (ext && o.skip_types.split(" ").includes(ext)) return;
+  if (suffix && o.skip_types.split(" ").includes(suffix)) return;
   if (o.skip_smaller_mb > 0 && size > 0 && size < o.skip_smaller_mb * 1048576) return;
   await ext.downloads.pause(item.id).catch(() => {});
   try {
@@ -215,18 +308,47 @@ ext.downloads.onCreated.addListener(async item => {
   ext.downloads.resume(item.id).catch(() => {}); // FastDL not running: let the browser handle it
 });
 
-// Toolbar button: grab the video on the current page.
-action.onClicked.addListener(tab =>
-  blocked(tab.url) ? badge(false) : grab(tab, tab.url).then(badge, () => badge(false)));
+// Toolbar button: grab the video on the current page (works even without playback).
+action.onClicked.addListener(async tab => {
+  if (blocked(tab.url)) return badge(false);
+  try {
+    const res = await ext.tabs.sendMessage(tab.id, { type: "extractStreams" });
+    if (Array.isArray(res) && res.length) {
+      for (const s of res) remember(tab.id, s);
+    }
+  } catch {}
+  grab(tab, tab.url).then(badge, () => badge(false));
+});
 
 ext.runtime.onInstalled.addListener(() => {
   ext.contextMenus.create({ id: "link", title: "Download with FastDL", contexts: ["link", "video", "audio", "image"] });
   ext.contextMenus.create({ id: "page", title: "Download video on this page with FastDL", contexts: ["page"] });
+  ext.contextMenus.create({ id: "page-links", title: "Download page links with FastDL", contexts: ["page"] });
+  ext.contextMenus.create({ id: "selected-links", title: "Download selected links with FastDL", contexts: ["selection"] });
 });
 
-ext.contextMenus.onClicked.addListener((info, tab) => {
+ext.contextMenus.onClicked.addListener(async (info, tab) => {
   const done = p => p.then(badge, () => badge(false));
   if ([tab?.url, info.pageUrl, info.frameUrl, info.linkUrl, info.srcUrl].some(blocked)) return badge(false);
-  if (info.mediaType === "video" || info.menuItemId === "page") return done(grab(tab, info.frameUrl || info.pageUrl, info.srcUrl));
+  if (info.menuItemId === "page-links" || info.menuItemId === "selected-links") {
+    try {
+      const urls = await ext.tabs.sendMessage(tab.id, { type: "extractLinks", selected: info.menuItemId === "selected-links" },
+        { frameId: info.frameId ?? 0 });
+      if (!Array.isArray(urls) || !urls.length) return badge(false);
+      const result = await api("/batch", { urls });
+      return badge(result.ok);
+    } catch { return badge(false); }
+  }
+  if (info.mediaType === "video" || info.menuItemId === "page") {
+    if (tab?.id) {
+      try {
+        const res = await ext.tabs.sendMessage(tab.id, { type: "extractStreams" });
+        if (Array.isArray(res) && res.length) {
+          for (const s of res) remember(tab.id, s);
+        }
+      } catch {}
+    }
+    return done(grab(tab, info.frameUrl || info.pageUrl, info.srcUrl));
+  }
   done(send(info.linkUrl || info.srcUrl, tab?.url));
 });

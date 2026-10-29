@@ -107,7 +107,203 @@
   const size = n => { const u = ["B", "KB", "MB", "GB"]; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return n.toFixed(i ? 2 : 0) + " " + u[i]; };
   const safe = s => (s || "video").replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim().slice(0, 150) || "video";
   const split = p => { const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/")); return [p.slice(0, i), p.slice(i + 1)]; };
-  const send = msg => ext.runtime.sendMessage(msg).catch(() => false); // false: FastDL off or extension reloaded
+  const send = msg => {
+    if (msg.type !== "formats") return ext.runtime.sendMessage(msg).catch(() => false);
+    // Cover the entire message round trip, including cookie lookup, app startup,
+    // and an unresponsive background worker, not just the background's fetch.
+    return new Promise(resolve => {
+      const timer = setTimeout(() => resolve({ ok: true, items: [],
+        error: "FastDL did not return qualities within 30 seconds. Close this menu and click Download this video to retry." }), 30000);
+      ext.runtime.sendMessage(msg).then(resolve, () => resolve(false)).finally(() => clearTimeout(timer));
+    });
+  };
+
+  const MANIFEST_RE = /\.(m3u8|mpd)($|[?#])/i;
+  const MEDIA_RE = /\.(mp4|webm|mkv|m4v|flv|mov|avi)($|[?#])/i;
+  const URL_STREAM_RE = /https?:\/\/[^\s"'<\\]+?\.(?:m3u8|mpd|mp4|webm|mkv|m4v)(?:[?#][^\s"'<\\]*)?/gi;
+
+  function findPageStreams() {
+    const streams = [];
+    const seen = new Set();
+    const add = (u, manifest, sz = 0) => {
+      if (!u || typeof u !== "string") return;
+      u = u.trim();
+      if (u.startsWith("//")) u = location.protocol + u;
+      else if (u.startsWith("/") && !u.startsWith("//")) {
+        try { u = new URL(u, location.href).href; } catch { return; }
+      }
+      if (/^https?:/i.test(u) && !seen.has(u)) {
+        seen.add(u);
+        const isMan = manifest != null ? manifest : MANIFEST_RE.test(u);
+        streams.push({ url: u, manifest: Boolean(isMan), size: Number(sz) || 0 });
+      }
+    };
+
+    // 1. Scan DOM <video> and <audio> elements (attributes, data-attrs, and shadow roots)
+    const mediaEls = Array.from(document.querySelectorAll("video, audio"));
+    for (const el of document.querySelectorAll("*")) {
+      if (el.shadowRoot) {
+        mediaEls.push(...Array.from(el.shadowRoot.querySelectorAll("video, audio")));
+      }
+    }
+    for (const el of mediaEls) {
+      add(el.currentSrc);
+      add(el.src);
+      add(el.getAttribute("src"));
+      add(el.getAttribute("data-src"));
+      add(el.getAttribute("data-url"));
+      add(el.getAttribute("data-video-url"));
+      add(el.getAttribute("data-original"));
+      for (const srcEl of el.querySelectorAll("source")) {
+        add(srcEl.src);
+        add(srcEl.getAttribute("src"));
+        add(srcEl.getAttribute("data-src"));
+      }
+    }
+
+    // 2. Scan OpenGraph, Twitter, and Schema meta tags
+    const metaSelectors = [
+      'meta[property="og:video"]',
+      'meta[property="og:video:url"]',
+      'meta[property="og:video:secure_url"]',
+      'meta[name="twitter:player:stream"]',
+      'meta[name="twitter:player"]',
+      'meta[itemprop="contentUrl"]',
+      'link[rel="video_src"]'
+    ];
+    for (const sel of metaSelectors) {
+      for (const el of document.querySelectorAll(sel)) {
+        add(el.content || el.getAttribute("content") || el.href || el.getAttribute("href"));
+      }
+    }
+
+    // 3. Scan JSON-LD Schemas (<script type="application/ld+json">)
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const text = script.textContent;
+        if (!text || (!text.includes("VideoObject") && !text.includes("contentUrl") && !text.includes("embedUrl"))) continue;
+        const matches = text.match(URL_STREAM_RE);
+        if (matches) for (const m of matches) add(m);
+        const data = JSON.parse(text);
+        const scanObj = obj => {
+          if (!obj || typeof obj !== "object") return;
+          if (obj.contentUrl) add(obj.contentUrl);
+          if (obj.embedUrl) add(obj.embedUrl);
+          for (const k of Object.keys(obj)) scanObj(obj[k]);
+        };
+        scanObj(data);
+      } catch {}
+    }
+
+    // 4. Scan Inline Scripts for stream and manifest URLs
+    for (const script of document.querySelectorAll("script:not([src])")) {
+      const txt = script.textContent;
+      if (!txt || txt.length > 500000) continue;
+      if (MANIFEST_RE.test(txt) || MEDIA_RE.test(txt)) {
+        const matches = txt.match(URL_STREAM_RE);
+        if (matches) {
+          for (const m of matches) add(m.replace(/\\\//g, "/"));
+        }
+      }
+    }
+
+    // 5. Scan Embedded Video iframes (YouTube, Vimeo, Dailymotion, Rumble, etc.)
+    for (const iframe of document.querySelectorAll("iframe[src]")) {
+      const src = iframe.src || iframe.getAttribute("src");
+      if (src && /youtube\.com\/embed|player\.vimeo\.com|dailymotion\.com\/embed|rumble\.com\/embed/i.test(src)) {
+        add(src);
+      }
+    }
+
+    // 6. Scan Resource Timing API entries
+    try {
+      const entries = performance.getEntriesByType("resource");
+      for (let i = Math.max(0, entries.length - 150); i < entries.length; i++) {
+        const u = entries[i].name;
+        if (MANIFEST_RE.test(u)) {
+          add(u, true);
+        } else if (MEDIA_RE.test(u)) {
+          add(u, false, entries[i].encodedBodySize || 0);
+        }
+      }
+    } catch {}
+
+    return streams;
+  }
+
+  function pageLinks(selected) {
+    const selection = selected ? window.getSelection() : null;
+    if (selected && (!selection || selection.isCollapsed)) return [];
+    const urls = new Set();
+    const add = raw => {
+      if (!raw || urls.size >= 500 || raw.startsWith("#")) return;
+      try {
+        const url = new URL(raw, location.href);
+        if (url.protocol !== "http:" && url.protocol !== "https:") return;
+        url.hash = "";
+        urls.add(url.href);
+      } catch {}
+    };
+    for (const link of document.querySelectorAll("a[href], area[href]")) {
+      if (!selected || selection.containsNode(link, true)) add(link.href);
+    }
+    if (selection) {
+      for (const match of selection.toString().matchAll(/https?:\/\/[^\s<>"']+/gi)) add(match[0]);
+    }
+    return [...urls];
+  }
+
+  // Answer on-demand extraction requests from background.js.
+  ext.runtime.onMessage.addListener((msg, sender, reply) => {
+    if (msg.type === "extractStreams") {
+      reply(findPageStreams());
+    } else if (msg.type === "extractLinks") {
+      reply(pageLinks(Boolean(msg.selected)));
+    }
+  });
+
+  function checkAndNotifyStreams() {
+    const s = findPageStreams();
+    if (s.length) send({ type: "addStreams", streams: s });
+  }
+
+  // Proactive stream discovery on load and DOM changes (without needing playback)
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", checkAndNotifyStreams);
+  } else {
+    checkAndNotifyStreams();
+  }
+  setTimeout(checkAndNotifyStreams, 600);
+  setTimeout(checkAndNotifyStreams, 2000);
+
+  // When new media elements are dynamically injected (SPAs)
+  let scanTimer = null;
+  const observer = new MutationObserver(() => {
+    if (scanTimer) return;
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      checkAndNotifyStreams();
+    }, 1000);
+  });
+  if (document.body) {
+    observer.observe(document.body, { childList: true, subtree: true });
+  } else {
+    document.addEventListener("DOMContentLoaded", () => {
+      if (document.body) observer.observe(document.body, { childList: true, subtree: true });
+    });
+  }
+
+  // Stream discovery when video begins playback
+  document.addEventListener("play", e => {
+    if (e.target && (e.target.tagName === "VIDEO" || e.target.tagName === "AUDIO")) {
+      checkAndNotifyStreams();
+      if (e.target.tagName === "VIDEO" && !video && e.target.offsetWidth > 160 && e.target.offsetHeight > 90) {
+        video = e.target;
+        bar.style.display = "flex";
+        place();
+      }
+    }
+  }, true);
 
   function place() {
     if (!video || !video.isConnected) { if (!menuOpen && !dlgOpen) bar.style.display = "none"; return; }
@@ -127,6 +323,15 @@
   const videoAt = (x, y, root = document) => {
     for (const el of root.elementsFromPoint(x, y)) {
       if (el.tagName === "VIDEO") return el;
+      if (el.querySelector) {
+        const childVideo = el.querySelector("video");
+        if (childVideo) return childVideo;
+      }
+      const playerContainer = el.closest?.(".html5-video-player, .player, [class*='player'], [id*='player'], [class*='video-container']");
+      if (playerContainer) {
+        const pVideo = playerContainer.querySelector("video");
+        if (pVideo) return pVideo;
+      }
       const inner = el.shadowRoot && videoAt(x, y, el.shadowRoot);
       if (inner) return inner;
     }
@@ -162,16 +367,27 @@
   const on = (sel, fn) => $(sel).addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); fn(e); });
 
   // ---- quality menu ----
-  function closeMenu() { menuOpen = false; menu.hidden = true; }
+  let prefetchedPage = "", prefetchedAt = 0;
+  $(".main").addEventListener("pointerenter", () => {
+    if (prefetchedPage === location.href && Date.now() - prefetchedAt < 30000) return;
+    prefetchedPage = location.href;
+    prefetchedAt = Date.now();
+    send({ type: "formats", pageUrl: location.href, src: video?.currentSrc,
+      pageStreams: findPageStreams(), prefetch: true });
+  });
+  let menuRequest = 0;
+  function closeMenu() { menuRequest++; menuOpen = false; menu.hidden = true; }
   on(".main", async () => {
     if (menuOpen) return closeMenu();
-    ctx = { pageUrl: location.href, src: video?.currentSrc };
+    const request = ++menuRequest;
+    const pageStreams = findPageStreams();
+    ctx = { pageUrl: location.href, src: video?.currentSrc, pageStreams };
     menuOpen = true;
     menu.hidden = false;
     menu.innerHTML = `<div class="mstate">Finding available qualities... (starts FastDL if it's closed)</div>`;
     place();
     const r = await send({ type: "formats", ...ctx });
-    if (!menuOpen) return;
+    if (!menuOpen || request !== menuRequest) return;
     if (!r || !r.ok) {
       menu.innerHTML = `<div class="mstate err">Couldn't start FastDL. Open FastDL.exe once (it sets up this button), then try again.</div>`;
       return;
@@ -198,7 +414,7 @@
     }
     const item = info.items[+b.dataset.i];
     // FastDL's own "Download File Info" window, on top of the browser, like IDM's
-    const r = await send({ type: "dialog", ...ctx, title: info.title, item });
+    const r = await send({ type: "dialog", ...ctx, title: info.title, item, src: item.url || ctx.src });
     if (r && r.window) label.textContent = "Download this video";
     else openDialog(item); // no FastDL app window (browser-only mode): ask right here instead
   });

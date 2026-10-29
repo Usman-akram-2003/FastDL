@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FastDL Download Manager",
-  "version": "1.5",
+  "version": "1.6",
   "description": "Send downloads and page videos to the FastDL desktop app for faster multi-connection downloads. Requires FastDL for Windows.",
   "permissions": [
     "downloads",

@@ -1123,10 +1123,16 @@ function multiCount() {
   $("multiCount").textContent = n ? `${n} link${n === 1 ? "" : "s"}. FastDL runs a few at a time (Options: downloads at the same time) and queues the rest.` : "";
   $("multiStart").disabled = !n;
 }
+const pendingMulti = [];
 function openMulti(text) {
+  // A browser import must not replace links or a folder the user is editing.
+  if ($("multi").open) { pendingMulti.push(text || ""); return; }
   $("multiText").value = text || ""; $("multiFolder").value = ""; $("multiErr").textContent = "";
   multiCount(); $("multi").showModal(); $("multiText").focus();
 }
+$("multi").addEventListener("close", () => {
+  if (pendingMulti.length) setTimeout(() => openMulti(pendingMulti.shift()), 0);
+});
 $("multiText").addEventListener("input", multiCount);
 $("bMulti").onclick = () => { const t = $("addUrl").value.trim(); $("dlg").close(); openMulti(/^(https?:|magnet:)/i.test(t) ? t : ""); };
 // pasting several lines into the address box opens this list instead
@@ -1244,6 +1250,15 @@ $("addForm").addEventListener("submit", async e => {
 });
 
 if (!DIALOG) { // the Download File Info window doesn't need the live list
+  const batch = new URLSearchParams(location.search).get("batch");
+  if (batch) {
+    fetch(`/api/batch/${encodeURIComponent(batch)}`).then(async r => {
+      const data = await r.json();
+      if (r.ok) openMulti(data.urls.join("\n"));
+      else alert(data.error || "Could not load browser links");
+    }).catch(() => alert("Could not load browser links. Send them again from your browser."));
+    history.replaceState(null, "", location.pathname);
+  }
   refresh();
   // hidden in the tray or minimized: stop asking every second (no CPU in the background); catch up on return
   setInterval(() => { if (!document.hidden) refresh(); }, 1000);

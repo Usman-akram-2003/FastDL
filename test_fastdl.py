@@ -944,6 +944,31 @@ assert post_settings({"cookies_browser": "netscape"}) == 400
 assert post_settings({"cookies_file": "C:/definitely/not/here/cookies.txt"}) == 400
 assert post_settings({"cookies_browser": "firefox"}) == 200 and fastdl.options()["cookies_browser"] == "firefox"
 assert post_settings({"cookies_browser": ""}) == 200 and fastdl.options()["cookies_browser"] == ""
+
+def post_api(path, body):
+    req = urllib.request.Request(f"http://127.0.0.1:{fastdl.PORT}{path}", _json.dumps(body).encode(),
+                                 {"X-FastDL": "1", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, _json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, _json.loads(e.read())
+
+# Dialog validation bugfix: invalid folder must not destroy spec or window
+fastdl.DIALOGS["test_d"] = {
+    "url": f"{base}/file.bin", "category": "Other", "headers": {}, "kind": "file",
+    "streams": [], "format": None, "page": "", "filename": "f.bin", "size": 100, "ext": "bin"
+}
+code, res = post_api("/api/dialog/test_d/submit", {"folder": "relative/path", "filename": "f.bin"})
+assert code == 400 and "full path" in res.get("error", "")
+assert "test_d" in fastdl.DIALOGS, "spec must remain in DIALOGS after validation failure"
+code, _ = post_api("/api/dialog/test_d/cancel", {})
+assert code == 200 and "test_d" not in fastdl.DIALOGS
+
+# Torrent folder validation bugfix: relative paths rejected
+code, res = post_api("/api/downloads", {"torrent": "dGVzdA==", "folder": "relative/path"})
+assert code == 400 and "full path" in res.get("error", "")
+
 fastdl.PORT = real_port
 
 # ---- improvements verification ----
@@ -967,6 +992,29 @@ try:
     assert False, "should raise IOError for 1 EB required space"
 except IOError as e:
     assert "Not enough disk space" in str(e)
+
+# 4. Torrent disk space pre-check
+t_space = fastdl.Torrent("magnet:?xt=urn:btih:abc", tempfile.gettempdir())
+t_space.size = 10**18
+try:
+    t_space._check_space(t_space.size)
+    assert False, "Torrent should raise IOError for 1 EB required space"
+except IOError as e:
+    assert "Not enough disk space" in str(e)
+
+# 5. close_progress defensive exception handling
+class DummyWindow:
+    def destroy(self):
+        raise RuntimeError("disposed object")
+
+fastdl.PROGRESS["dummy_win"] = DummyWindow()
+fastdl.close_progress("dummy_win")
+assert "dummy_win" not in fastdl.PROGRESS
+
+# 6. Embedded video site stream pre-play resolution
+d_embed = fastdl.make("https://my-blog.com/post/1", tempfile.gettempdir(), {}, kind="page",
+                      streams=[{"url": "https://www.youtube.com/watch?v=123", "manifest": False}])
+assert isinstance(d_embed, fastdl.Video) and d_embed.url == "https://www.youtube.com/watch?v=123"
 
 print("all good")
 

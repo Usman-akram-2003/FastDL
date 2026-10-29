@@ -35,6 +35,12 @@ jobs:
       - name: Tests
         run: python test_fastdl.py
 
+      - name: Batch import, range integrity, and quality regression tests
+        run: python -m unittest test_batch_import test_range_responses test_quality_lookup -v
+
+      - name: Browser extension regression tests
+        run: node --test test_extension.cjs test_button.cjs test_browser_downloads.cjs
+
       - name: The tag must match APP_VERSION
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
